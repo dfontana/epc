@@ -1,5 +1,5 @@
-use chrono::{DateTime, FixedOffset, TimeZone, Utc};
-use chrono_tz::Tz;
+use chrono::{DateTime, FixedOffset, LocalResult, TimeZone, Utc};
+use chrono_tz::{Tz, TZ_VARIANTS};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -25,7 +25,7 @@ enum Precision {
 #[command(args_conflicts_with_subcommands = true)]
 struct Cli {
   #[command(subcommand)]
-  convert: Option<Commands>,
+  commands: Option<Commands>,
 
   #[command(flatten)]
   from_stamp: FromStampArgs,
@@ -45,8 +45,8 @@ enum Commands {
 #[derive(Args)]
 struct FromStampArgs {
   /// Epoch timestamps in the given precision
-  #[arg(value_parser = clap::value_parser!(i32).range(0..))]
-  timestamps: Vec<i32>,
+  #[arg(value_parser = clap::value_parser!(i64).range(0..))]
+  timestamps: Vec<i64>,
 
   /// Convert to the given timezone. Accepts IANA names.
   #[arg(long, short)]
@@ -88,11 +88,31 @@ struct FromStringArgs {
 
 fn main() {
   let cli = Cli::parse();
-
-  Utc.timestamp_opt(0, 0);
-  Utc.timestamp_millis_opt(0);
-  Utc.timestamp_nanos(0);
+  match cli.commands {
+    Some(Commands::Timezone) => {
+      handle_timezone();
+    }
+    Some(Commands::FromStamps(from_stamp)) => {
+      handle_from_stamps(from_stamp);
+    }
+    Some(Commands::FromStrings(from_string)) => {
+      handle_from_strings(from_string);
+    }
+    None => handle_from_stamps(cli.from_stamp),
+  }
 }
+
+fn handle_timezone() {
+  TZ_VARIANTS.iter().for_each(|f| println!("{}", f))
+}
+fn handle_from_stamps(args: FromStampArgs) {
+  let _parse = match args.precision {
+    Precision::SECS => |i: i64| Utc.timestamp_opt(i, 0),
+    Precision::MILLIS => |i: i64| Utc.timestamp_millis_opt(i),
+    Precision::NANOS => |i: i64| LocalResult::Single(Utc.timestamp_nanos(i)),
+  };
+}
+fn handle_from_strings(_args: FromStringArgs) {}
 
 #[test]
 fn verify_cli() {

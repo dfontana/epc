@@ -7,7 +7,7 @@ use std::{
 
 use chrono::{
   format::{Item, StrftimeItems},
-  DateTime, FixedOffset, LocalResult, TimeZone, Utc,
+  DateTime, FixedOffset, Local, LocalResult, TimeZone, Utc,
 };
 use chrono_tz::{Tz, TZ_VARIANTS};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -39,7 +39,10 @@ impl Precision {
     }
   }
 
-  fn as_stamp(&self, dt: DateTime<Tz>) -> i64 {
+  fn as_stamp<T>(&self, dt: DateTime<T>) -> i64
+  where
+    T: TimeZone,
+  {
     match self {
       Precision::SECS => dt.timestamp(),
       Precision::MILLIS => dt.timestamp_millis(),
@@ -96,12 +99,14 @@ struct Cli {
   commands: Option<Commands>,
 
   #[command(flatten)]
-  convert: ConvArgs,
+  current: CurrentArgs,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-  /// (default) Convert a list of epoch timestamps into date strings or vice versa
+  /// (default) Get the current epoch time
+  Current(CurrentArgs),
+  /// Convert a list of epoch timestamps into date strings or vice versa
   Convert(ConvArgs),
   /// Get information on supported timezones
   Timezone(TzArgs),
@@ -235,6 +240,82 @@ impl Handler for ConvArgs {
   }
 }
 
+#[derive(Clone)]
+enum LocalOrTz {
+  TZ(Tz),
+  Local,
+}
+
+impl FromStr for LocalOrTz {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    if s == "local" {
+      Ok(LocalOrTz::Local)
+    } else {
+      s.parse::<Tz>()
+        .map(|t| LocalOrTz::TZ(t))
+        .map_err(|_| format!("{} is not a known timezone", s))
+    }
+  }
+}
+
+#[derive(Args)]
+struct CurrentArgs {
+  /// Convert to the given timezone. Omission will retain UTC. Accepts IANA names.
+  /// passing -t alone will use the system local timezone
+  #[arg(long, short='t', default_missing_value="local", require_equals=true, num_args=0..=1)]
+  at_timezone: Option<LocalOrTz>,
+
+  /// What format to print the date strings in. Omitting will retain timestamps.
+  ///
+  /// Valid specifiers can be found at https://docs.rs/chrono/latest/chrono/format/strftime/index.html
+  /// A reasonable default has been given, allowing you to pass -f alone
+  #[arg(long, short = 'f', default_missing_value = "%Y-%m-%dT%H:%M:%S%z", require_equals=true, num_args=0..=1)]
+  output_format: Option<Format>,
+
+  /// What precision timestamps should be treated as
+  #[arg(value_enum, long, short, default_value_t=Precision::MILLIS, conflicts_with="output_format")]
+  precision: Precision,
+}
+
+impl Handler for CurrentArgs {
+  fn handle<W, E>(&self, mut out: W, _err: E) -> Result<(), io::Error>
+  where
+    W: Write,
+    E: Write,
+  {
+    // TODO: There has to be a better way to do this. For some reason though
+    //       I can't figure out how to get the DTs into the same type
+    match self.at_timezone {
+      Some(LocalOrTz::TZ(tz)) => {
+        let dt = Utc::now().with_timezone(&tz);
+        if let Some(fmt) = &self.output_format {
+          writeln!(&mut out, "{}", dt.format(&fmt.0))
+        } else {
+          writeln!(&mut out, "{}", self.precision.as_stamp(dt))
+        }
+      }
+      Some(LocalOrTz::Local) => {
+        let dt = Local::now();
+        if let Some(fmt) = &self.output_format {
+          writeln!(&mut out, "{}", dt.format(&fmt.0))
+        } else {
+          writeln!(&mut out, "{}", self.precision.as_stamp(dt))
+        }
+      }
+      None => {
+        let dt = Utc::now();
+        if let Some(fmt) = &self.output_format {
+          writeln!(&mut out, "{}", dt.format(&fmt.0))
+        } else {
+          writeln!(&mut out, "{}", self.precision.as_stamp(dt))
+        }
+      }
+    }
+  }
+}
+
 fn main() -> Result<(), io::Error> {
   let cli = Cli::parse();
   let output = io::stdout();
@@ -250,7 +331,8 @@ where
   match cli.commands {
     Some(Commands::Timezone(tza)) => tza.handle(output, error),
     Some(Commands::Convert(conv)) => conv.handle(output, error),
-    None => cli.convert.handle(output, error),
+    Some(Commands::Current(curr)) => curr.handle(output, error),
+    None => cli.current.handle(output, error),
   }
 }
 

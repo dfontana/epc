@@ -1,6 +1,7 @@
 use std::{
   cmp::Ordering,
   io::{self, Write},
+  ops::{Add, Sub},
   str::FromStr,
 };
 
@@ -104,11 +105,7 @@ enum Commands {
   Convert(ConvArgs),
   /// Get information on supported timezones
   Timezone(TzArgs),
-  // TODO: Calc'ing. eg get the current time. Manipulate it by adding/subtracting.
-  //       manipulate a given time.
-  // /// Perform simple addition or subtraction against input
-  // Calc(CalcArgs),
-  // TODO: Delta. Eg get diff of two time-likes and print human legible
+  // TODO: Delta. Eg get diff of N time-likes and print human legible
 }
 
 #[derive(Args)]
@@ -149,13 +146,14 @@ struct ConvArgs {
   input: Vec<ConversionInput>,
 
   /// Convert to the given timezone. Omission will retain UTC. Accepts IANA names.
-  #[arg(long, short, default_value_t = Tz::UTC)]
+  #[arg(long, short='t', default_value_t = Tz::UTC)]
   at_timezone: Tz,
 
   /// What format to print the date strings in. Omitting will retain timestamps.
   ///
   /// Valid specifiers can be found at https://docs.rs/chrono/latest/chrono/format/strftime/index.html
-  #[arg(long, short = 'f')]
+  /// A reasonable default has been given, allowing you to pass -f alone
+  #[arg(long, short = 'f', default_missing_value = "%Y-%m-%dT%H:%M:%S%z", require_equals=true, num_args=0..=1)]
   output_format: Option<Format>,
 
   /// What precision timestamps should be treated as
@@ -165,8 +163,19 @@ struct ConvArgs {
   /// When supplying multiple timestamps what order to print them in
   #[arg(value_enum, long, short)]
   order: Option<Order>,
+
+  /// Subtract a human friendly duration to all times
+  #[arg(long, short = 's', conflicts_with = "add")]
+  sub: Option<humantime::Duration>,
+
+  /// Add a human friendly duration to all times
+  #[arg(long, short = 'a', conflicts_with = "sub")]
+  add: Option<humantime::Duration>,
 }
 
+// TODO: Needs better error handling story. Trying to write to stderr
+//       and silently continuing isn't great. Would be better to just raise
+//       the exceptions
 impl Handler for ConvArgs {
   fn handle<W, E>(&self, mut out: W, mut err: E) -> Result<(), io::Error>
   where
@@ -189,6 +198,25 @@ impl Handler for ConvArgs {
       })
       // Convert to the given timezone
       .map(|dt: DateTime<FixedOffset>| dt.with_timezone(&self.at_timezone))
+      .map(|dt| {
+        // TODO: This isn't great, trying to shove nanos as the common denominator.
+        //       Maybe we can make a better conversion method? Or perhaps add the
+        //       Components?
+        // TODO: Error handling here is lacklustre
+        if let Some(dur) = self.add {
+          match dur.as_nanos().try_into() {
+            Ok(nanos) => dt.add(chrono::Duration::nanoseconds(nanos)),
+            Err(_) => dt,
+          }
+        } else if let Some(dur) = self.sub {
+          match dur.as_nanos().try_into() {
+            Ok(nanos) => dt.sub(chrono::Duration::nanoseconds(nanos)),
+            Err(_) => dt,
+          }
+        } else {
+          dt
+        }
+      })
       // Apply ordering
       .sorted_by(|a, b| match self.order {
         Some(Order::DSC) => Ord::cmp(&a, &b).reverse(),
@@ -250,9 +278,8 @@ mod test {
 
   #[test]
   fn verify_stamp() {
-    let (output, error) = run_test(
-      " -p secs -a America/New_York 1679258022 1676258186 1679258186 -o dsc -f %Y-%m-%dT%H:%M:%S%z",
-    );
+    let (output, error) =
+      run_test(" -p secs -t America/New_York 1679258022 1676258186 1679258186 -o dsc -f");
     assert_eq!("", error);
     assert_eq!(
       indoc! {"

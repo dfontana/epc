@@ -9,6 +9,7 @@ edition = "2021"
 chrono = "0.4.24"
 chrono-tz = {version="0.8.1", features=["case-insensitive"]}
 clap = {version = "4.1.9", features=["derive"]}
+humantime = "2.1.0"
 itertools = "0.10.5"
 
 [dev-dependencies]

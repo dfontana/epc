@@ -1,3 +1,8 @@
+use std::{
+  io::{self, Write},
+  str::FromStr,
+};
+
 use chrono::{
   format::{Item, StrftimeItems},
   DateTime, FixedOffset, LocalResult, TimeZone, Utc,
@@ -41,6 +46,46 @@ impl Precision {
   }
 }
 
+#[derive(Clone)]
+enum ConversionInput {
+  Stamp(i64),
+  String(DateTime<FixedOffset>),
+}
+
+impl ConversionInput {
+  fn to_dt(&self, precision: &Precision) -> Result<DateTime<FixedOffset>, String> {
+    match self {
+      ConversionInput::String(dt) => Ok(dt.clone()),
+      ConversionInput::Stamp(ts) => precision
+        .parse(*ts)
+        .single()
+        .map(|dt| dt.into())
+        .ok_or_else(|| format!("Could not parse: {}", ts)),
+    }
+  }
+}
+
+impl FromStr for ConversionInput {
+  type Err = String;
+
+  fn from_str(arg: &str) -> Result<Self, Self::Err> {
+    match arg.parse::<i64>() {
+      Ok(ts) => Ok(ConversionInput::Stamp(ts)),
+      Err(_) => match arg.parse::<DateTime<FixedOffset>>() {
+        Ok(dt) => Ok(ConversionInput::String(dt)),
+        Err(_) => Err(format!("Could not parse: {}", arg)),
+      },
+    }
+  }
+}
+
+trait Handler {
+  fn handle<W, E>(&self, output: W, error: E) -> Result<(), io::Error>
+  where
+    W: Write,
+    E: Write;
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -49,28 +94,57 @@ struct Cli {
   commands: Option<Commands>,
 
   #[command(flatten)]
-  from_stamp: FromStampArgs,
+  convert: ConvArgs,
 }
-
-// TODO: Calc'ing. eg get the current time. Manipulate it by adding/subtracting.
-//       manipulate a given time.
 
 #[derive(Subcommand)]
 enum Commands {
-  /// (default) Convert a list of epoch timestamps into date strings
-  FromStamps(FromStampArgs),
-  /// Convert a list of date strings into epoch timestamps
-  #[command(short_flag = 's')]
-  FromStrings(FromStringArgs),
+  /// (default) Convert a list of epoch timestamps into date strings or vice versa
+  Convert(ConvArgs),
   /// Get information on supported timezones
-  Timezone,
+  Timezone(TzArgs),
+  // TODO: Calc'ing. eg get the current time. Manipulate it by adding/subtracting.
+  //       manipulate a given time.
+  // /// Perform simple addition or subtraction against input
+  // Calc(CalcArgs),
 }
 
 #[derive(Args)]
-struct FromStampArgs {
-  /// Epoch timestamps in the given precision
-  #[arg(value_parser = clap::value_parser!(i64).range(0..))]
-  timestamps: Vec<i64>,
+struct TzArgs {}
+
+impl Handler for TzArgs {
+  fn handle<W, E>(&self, mut out: W, _err: E) -> Result<(), io::Error>
+  where
+    W: Write,
+    E: Write,
+  {
+    TZ_VARIANTS
+      .iter()
+      .map(|f| writeln!(&mut out, "{}", f))
+      .collect()
+  }
+}
+
+#[derive(Clone)]
+struct Format(String);
+
+impl FromStr for Format {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    if StrftimeItems::new(s).any(|v| matches!(v, Item::Error)) {
+      Err("contains unknown specifier".into())
+    } else {
+      Ok(Format(s.into()))
+    }
+  }
+}
+
+#[derive(Args)]
+struct ConvArgs {
+  /// Mixture of Epoch timestamps in the given precision or date-time strings
+  #[arg()]
+  input: Vec<ConversionInput>,
 
   /// Convert to the given timezone. Omission will retain UTC. Accepts IANA names.
   #[arg(long, short, default_value_t = Tz::UTC)]
@@ -79,9 +153,8 @@ struct FromStampArgs {
   /// What format to print the date strings in. Omitting will retain timestamps.
   ///
   /// Valid specifiers can be found at https://docs.rs/chrono/latest/chrono/format/strftime/index.html
-  // TODO: Could use a default format arg exclusive with this for: %Y-%m-%dT%H:%M:%S%z
-  #[arg(long, short='f', value_parser = parse_format)]
-  output_format: Option<String>,
+  #[arg(long, short='f')]
+  output_format: Option<Format>,
 
   /// What precision timestamps should be treated as
   #[arg(value_enum, long, short, default_value_t=Precision::MILLIS)]
@@ -92,90 +165,28 @@ struct FromStampArgs {
   order: Order,
 }
 
-#[derive(Args)]
-struct FromStringArgs {
-  /// Date strings in Fixed Offset format: 2014-11-28T21:00:09+09:00
-  #[arg()]
-  timestrings: Vec<DateTime<FixedOffset>>,
-
-  /// Convert to the given timezone. Omission will use UTC. Accepts IANA names.
-  #[arg(long, short, default_value_t = Tz::UTC)]
-  at_timezone: Tz,
-
-  /// What format to print the date strings in. Omitting will retain timestamps.
-  ///
-  /// Valid specifiers can be found at https://docs.rs/chrono/latest/chrono/format/strftime/index.html
-  #[arg(long, short, value_parser = parse_format)]
-  output_format: Option<String>,
-
-  /// What precision timestamps should be treated as
-  #[arg(value_enum, long, short, default_value_t=Precision::MILLIS)]
-  precision: Precision,
-
-  /// When supplying multiple timestamps what order to print them in
-  #[arg(value_enum, long, default_value_t = Order::DSC)]
-  order: Order,
-}
-
-fn parse_format(s: &str) -> Result<String, String> {
-  if StrftimeItems::new(s).any(|v| matches!(v, Item::Error)) {
-    Err("contains unknown specifier".into())
-  } else {
-    Ok(s.into())
-  }
-}
-
-fn main() {
-  let cli = Cli::parse();
-  match cli.commands {
-    Some(Commands::Timezone) => {
-      handle_timezone();
-    }
-    Some(Commands::FromStamps(from_stamp)) => {
-      handle_from_stamps(from_stamp);
-    }
-    Some(Commands::FromStrings(from_string)) => {
-      handle_from_strings(from_string);
-    }
-    None => handle_from_stamps(cli.from_stamp),
-  }
-}
-
-struct InternalConversion {
-  at_timezone: Tz,
-  output_format: Option<String>,
-  precision: Precision,
-  order: Order,
-}
-
-impl From<&FromStampArgs> for InternalConversion {
-  fn from(args: &FromStampArgs) -> Self {
-    InternalConversion {
-      at_timezone: args.at_timezone,
-      output_format: args.output_format.clone(),
-      precision: args.precision,
-      order: args.order,
-    }
-  }
-}
-
-impl From<&FromStringArgs> for InternalConversion {
-  fn from(args: &FromStringArgs) -> Self {
-    InternalConversion {
-      at_timezone: args.at_timezone,
-      output_format: args.output_format.clone(),
-      precision: args.precision,
-      order: args.order,
-    }
-  }
-}
-
-impl InternalConversion {
-  fn apply(&self, iter: impl IntoIterator<Item = DateTime<FixedOffset>>) {
-    // Convert to the given timezone
-    iter
-      .into_iter()
-      .map(|dt| dt.with_timezone(&self.at_timezone))
+impl Handler for ConvArgs {
+  fn handle<W, E>(&self, mut out: W, mut err: E) -> Result<(), io::Error>
+  where
+    W: Write,
+    E: Write,
+  {
+    self
+      .input
+      .iter()
+      // Extract as datetime
+      .filter_map(|inp| {
+        match inp.to_dt(&self.precision) {
+          Ok(v) => Some(v),
+          Err(e) => {
+            // Swallow errors, there's not much more to be done
+            writeln!(&mut err, "{}", e).unwrap_or(());
+            None
+          }
+        }
+      })
+      // Convert to the given timezone
+      .map(|dt: DateTime<FixedOffset>| dt.with_timezone(&self.at_timezone))
       // Apply ordering
       .sorted_by(|a, b| {
         let mut ord = Ord::cmp(&a, &b);
@@ -187,44 +198,122 @@ impl InternalConversion {
       // Apply output formatting
       .map(|dt| {
         if let Some(fmt) = &self.output_format {
-          format!("{}", dt.format(fmt))
+          writeln!(&mut out, "{}", dt.format(&fmt.0))
         } else {
-          format!("{}", self.precision.as_stamp(dt))
+          writeln!(&mut out, "{}", self.precision.as_stamp(dt))
         }
       })
-      // Output
-      .for_each(|fstr| println!("{}", fstr))
+      .collect()
   }
 }
 
-fn handle_timezone() {
-  TZ_VARIANTS.iter().for_each(|f| println!("{}", f))
+fn main() -> Result<(), io::Error> {
+  let cli = Cli::parse();
+  let output = io::stdout();
+  let error = io::stderr();
+  run(cli, output, error)
 }
 
-fn handle_from_stamps(args: FromStampArgs) {
-  InternalConversion::from(&args).apply(
-    args
-      .timestamps
-      .iter()
-      .map(|ts| (ts, args.precision.parse(*ts)))
-      .filter_map(|(ts, dtr)| {
-        if let Some(dt) = dtr.single() {
-          Some(dt)
-        } else {
-          println!("Could not interpret {}", ts);
-          None
-        }
-      })
-      .map(|dt| dt.into()),
-  )
+fn run<W, E>(cli: Cli, output: W, error: E) -> Result<(), io::Error>
+where
+  W: Write,
+  E: Write,
+{
+  match cli.commands {
+    Some(Commands::Timezone(tza)) => tza.handle(output, error),
+    Some(Commands::Convert(conv)) => conv.handle(output, error),
+    None => cli.convert.handle(output, error),
+  }
 }
 
-fn handle_from_strings(args: FromStringArgs) {
-  InternalConversion::from(&args).apply(args.timestrings)
-}
+#[cfg(test)]
+mod test {
+  use crate::{run, Cli};
+  use clap::Parser;
+  use indoc::indoc;
 
-#[test]
-fn verify_cli() {
-  use clap::CommandFactory;
-  Cli::command().debug_assert()
+  fn run_test(strs: Vec<&str>) -> (String, String) {
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    let cli = Cli::try_parse_from(strs).expect("Could not parse args");
+    run(cli, &mut output, &mut error).expect("Failed to run");
+    let output = String::from_utf8(output).expect("Not UTF-8");
+    let error = String::from_utf8(error).expect("Not UTF-8");
+    (output, error)
+  }
+
+  #[test]
+  fn verify_cli() {
+    use clap::CommandFactory;
+    Cli::command().debug_assert()
+  }
+
+  #[test]
+  fn verify_stamp() {
+    let (output, error) = run_test(vec![
+      "",
+      "-p",
+      "secs",
+      "-a",
+      "America/New_York",
+      "1679258022",
+      "1676258186",
+      "1679258186",
+      "-o",
+      "dsc",
+      "-f",
+      "%Y-%m-%dT%H:%M:%S%z",
+    ]);
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        2023-03-19T16:36:26-0400
+        2023-03-19T16:33:42-0400
+        2023-02-12T22:16:26-0500
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn sort_asc() {
+    let (output, error) = run_test(vec![
+      "",
+      "1679258022",
+      "1676258186",
+      "1679258186",
+      "-o",
+      "asc",
+    ]);
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1676258186
+        1679258022
+        1679258186
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn sort_dsc() {
+    let (output, error) = run_test(vec![
+      "",
+      "1679258022",
+      "1676258186",
+      "1679258186",
+      "-o",
+      "dsc",
+    ]);
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258186
+        1679258022
+        1676258186
+      "},
+      output
+    );
+  }
 }

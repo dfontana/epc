@@ -1,4 +1,5 @@
 use std::{
+  cmp::Ordering,
   io::{self, Write},
   str::FromStr,
 };
@@ -107,6 +108,7 @@ enum Commands {
   //       manipulate a given time.
   // /// Perform simple addition or subtraction against input
   // Calc(CalcArgs),
+  // TODO: Delta. Eg get diff of two time-likes and print human legible
 }
 
 #[derive(Args)]
@@ -153,7 +155,7 @@ struct ConvArgs {
   /// What format to print the date strings in. Omitting will retain timestamps.
   ///
   /// Valid specifiers can be found at https://docs.rs/chrono/latest/chrono/format/strftime/index.html
-  #[arg(long, short='f')]
+  #[arg(long, short = 'f')]
   output_format: Option<Format>,
 
   /// What precision timestamps should be treated as
@@ -161,8 +163,8 @@ struct ConvArgs {
   precision: Precision,
 
   /// When supplying multiple timestamps what order to print them in
-  #[arg(value_enum, long, short, default_value_t = Order::DSC)]
-  order: Order,
+  #[arg(value_enum, long, short)]
+  order: Option<Order>,
 }
 
 impl Handler for ConvArgs {
@@ -188,12 +190,10 @@ impl Handler for ConvArgs {
       // Convert to the given timezone
       .map(|dt: DateTime<FixedOffset>| dt.with_timezone(&self.at_timezone))
       // Apply ordering
-      .sorted_by(|a, b| {
-        let mut ord = Ord::cmp(&a, &b);
-        if self.order == Order::DSC {
-          ord = ord.reverse();
-        }
-        ord
+      .sorted_by(|a, b| match self.order {
+        Some(Order::DSC) => Ord::cmp(&a, &b).reverse(),
+        Some(Order::ASC) => Ord::cmp(&a, &b),
+        None => Ordering::Equal,
       })
       // Apply output formatting
       .map(|dt| {
@@ -232,10 +232,10 @@ mod test {
   use clap::Parser;
   use indoc::indoc;
 
-  fn run_test(strs: Vec<&str>) -> (String, String) {
+  fn run_test(cli_str: &str) -> (String, String) {
     let mut output = Vec::new();
     let mut error = Vec::new();
-    let cli = Cli::try_parse_from(strs).expect("Could not parse args");
+    let cli = Cli::try_parse_from(cli_str.split(' ')).expect("Could not parse args");
     run(cli, &mut output, &mut error).expect("Failed to run");
     let output = String::from_utf8(output).expect("Not UTF-8");
     let error = String::from_utf8(error).expect("Not UTF-8");
@@ -250,20 +250,9 @@ mod test {
 
   #[test]
   fn verify_stamp() {
-    let (output, error) = run_test(vec![
-      "",
-      "-p",
-      "secs",
-      "-a",
-      "America/New_York",
-      "1679258022",
-      "1676258186",
-      "1679258186",
-      "-o",
-      "dsc",
-      "-f",
-      "%Y-%m-%dT%H:%M:%S%z",
-    ]);
+    let (output, error) = run_test(
+      " -p secs -a America/New_York 1679258022 1676258186 1679258186 -o dsc -f %Y-%m-%dT%H:%M:%S%z",
+    );
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
@@ -276,19 +265,26 @@ mod test {
   }
 
   #[test]
-  fn sort_asc() {
-    let (output, error) = run_test(vec![
-      "",
-      "1679258022",
-      "1676258186",
-      "1679258186",
-      "-o",
-      "asc",
-    ]);
+  fn no_sort() {
+    let (output, error) = run_test(" 1679258022 1676258187 1679258186");
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1676258186
+        1679258022
+        1676258187
+        1679258186
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn sort_asc() {
+    let (output, error) = run_test(" 1679258022 1676258187 1679258186 -o asc");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1676258187
         1679258022
         1679258186
       "},
@@ -298,20 +294,56 @@ mod test {
 
   #[test]
   fn sort_dsc() {
-    let (output, error) = run_test(vec![
-      "",
-      "1679258022",
-      "1676258186",
-      "1679258186",
-      "-o",
-      "dsc",
-    ]);
+    let (output, error) = run_test(" 1679258022 1676258187 1679258186 -o dsc");
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
         1679258186
         1679258022
-        1676258186
+        1676258187
+       "},
+      output
+    );
+  }
+
+  #[test]
+  fn millis() {
+    let (output, error) = run_test(" 1679661279000 1679661179000 1679661079000");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679661279000
+        1679661179000
+        1679661079000
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn mixed_input() {
+    let (output, error) = run_test(" -p secs 1679258022 2023-03-19T16:36:26-0400 1679258186");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258022
+        1679258186
+        1679258186
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn string_only() {
+    let (output, error) =
+      run_test(" 2023-03-19T16:36:26-0400 2023-03-19T16:33:42-0400 2023-02-12T22:16:26-0500");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258186000
+        1679258022000
+        1676258186000
       "},
       output
     );

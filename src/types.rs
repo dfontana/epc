@@ -7,6 +7,7 @@ use chrono::{
   format::{Item, StrftimeItems},
   DateTime, LocalResult, TimeZone, Utc,
 };
+use chrono_tz::Tz;
 use clap::ValueEnum;
 
 pub trait Handler {
@@ -37,6 +38,25 @@ pub enum Precision {
 #[derive(Clone)]
 pub struct Format(pub String);
 
+#[derive(Clone)]
+pub struct AutoTz(pub Tz);
+
+impl FromStr for AutoTz {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let pstr = if s == "local" {
+      iana_time_zone::get_timezone().map_err(|_| "Failed to lookup system timezone")?
+    } else {
+      s.to_string()
+    };
+    pstr
+      .parse::<Tz>()
+      .map(|t| AutoTz(t))
+      .map_err(|_| format!("{} is not a known timezone", s))
+  }
+}
+
 impl Precision {
   pub fn parse(&self, ts: i64) -> LocalResult<DateTime<Utc>> {
     match self {
@@ -46,7 +66,7 @@ impl Precision {
     }
   }
 
-  pub fn as_stamp<T>(&self, dt: DateTime<T>) -> i64
+  pub fn as_stamp<T>(&self, dt: &DateTime<T>) -> i64
   where
     T: TimeZone,
   {

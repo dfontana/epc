@@ -1,16 +1,18 @@
 use std::{
   cmp::Ordering,
   io::{self, Write},
-  ops::{Add, Sub},
+  ops::Neg,
   str::FromStr,
 };
 
 use chrono::{DateTime, FixedOffset};
 use chrono_tz::Tz;
 use clap::Args;
-use itertools::Itertools;
 
-use crate::types::{Format, Handler, Order, Precision};
+use crate::{
+  hduration::HDuration,
+  types::{AutoTz, Format, Handler, Order, Precision},
+};
 
 #[derive(Args)]
 pub struct ConvArgs {
@@ -19,8 +21,9 @@ pub struct ConvArgs {
   input: Vec<ConversionInput>,
 
   /// Convert to the given timezone. Omission will retain UTC. Accepts IANA names.
-  #[arg(long, short='t', default_value_t = Tz::UTC)]
-  at_timezone: Tz,
+  /// passing -t alone will use the system local timezone
+  #[arg(long, short='t', default_missing_value="local", require_equals=true, num_args=0..=1)]
+  at_timezone: Option<AutoTz>,
 
   /// What format to print the date strings in. Omitting will retain timestamps.
   ///
@@ -37,66 +40,54 @@ pub struct ConvArgs {
   #[arg(value_enum, long, short)]
   order: Option<Order>,
 
-  /// Subtract a human friendly duration to all times
-  #[arg(long, short = 's', conflicts_with = "add")]
-  sub: Option<humantime::Duration>,
-
-  /// Add a human friendly duration to all times
-  #[arg(long, short = 'a', conflicts_with = "sub")]
-  add: Option<humantime::Duration>,
+  /// Add a human friendly duration to all times (can be negative)
+  #[arg(long, short = 'a')]
+  add: Option<HDuration>,
 }
 
-// TODO: Needs better error handling story. Trying to write to stderr
-//       and silently continuing isn't great. Would be better to just raise
-//       the exceptions
 impl Handler for ConvArgs {
   fn handle<W, E>(&self, mut out: W, mut err: E) -> Result<(), io::Error>
   where
     W: Write,
     E: Write,
   {
-    self
+    let into_tz = self.at_timezone.as_ref().map(|v| v.0).unwrap_or(Tz::UTC);
+    let maybe_datetimes = self
       .input
       .iter()
       // Extract as datetime
-      .filter_map(|inp| {
-        match inp.to_dt(&self.precision) {
-          Ok(v) => Some(v),
-          Err(e) => {
-            // Swallow errors, there's not much more to be done
-            writeln!(&mut err, "{}", e).unwrap_or(());
-            None
-          }
-        }
-      })
+      .map(|inp| inp.to_dt(&self.precision))
       // Convert to the given timezone
-      .map(|dt: DateTime<FixedOffset>| dt.with_timezone(&self.at_timezone))
-      .map(|dt| {
-        // TODO: This isn't great, trying to shove nanos as the common denominator.
-        //       Maybe we can make a better conversion method? Or perhaps add the
-        //       Components?
-        // TODO: Error handling here is lacklustre
-        if let Some(dur) = self.add {
-          match dur.as_nanos().try_into() {
-            Ok(nanos) => dt.add(chrono::Duration::nanoseconds(nanos)),
-            Err(_) => dt,
-          }
-        } else if let Some(dur) = self.sub {
-          match dur.as_nanos().try_into() {
-            Ok(nanos) => dt.sub(chrono::Duration::nanoseconds(nanos)),
-            Err(_) => dt,
-          }
+      .map(|rdt| rdt.map(|dt| dt.with_timezone(&into_tz)))
+      // Apply addition
+      .map(|rdt| {
+        if let Some(dur) = &self.add {
+          chrono::Duration::from_std(dur.inner)
+            .map(|d| if dur.negative { d.neg() } else { d })
+            .map_err(|e| format!("{}", e))
+            .and_then(|d| rdt.map(|dt| dt + d))
         } else {
-          dt
+          rdt
         }
       })
-      // Apply ordering
-      .sorted_by(|a, b| match self.order {
-        Some(Order::DSC) => Ord::cmp(&a, &b).reverse(),
-        Some(Order::ASC) => Ord::cmp(&a, &b),
-        None => Ordering::Equal,
-      })
-      // Apply output formatting
+      .collect::<Result<Vec<_>, _>>();
+
+    // Sus out any errors now that we're done oeprating
+    let mut dts = match maybe_datetimes {
+      Err(e) => return writeln!(&mut err, "{}", e),
+      Ok(dts) => dts,
+    };
+
+    // Apply sorting rules
+    dts.sort_by(|a, b| match self.order {
+      Some(Order::DSC) => Ord::cmp(&a, &b).reverse(),
+      Some(Order::ASC) => Ord::cmp(&a, &b),
+      None => Ordering::Equal,
+    });
+
+    // Apply output formatting
+    dts
+      .iter()
       .map(|dt| {
         if let Some(fmt) = &self.output_format {
           writeln!(&mut out, "{}", dt.format(&fmt.0))
@@ -138,5 +129,130 @@ impl FromStr for ConversionInput {
         Err(_) => Err(format!("Could not parse: {}", arg)),
       },
     }
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use crate::{run, Cli};
+  use clap::Parser;
+  use indoc::indoc;
+
+  fn run_test(cli_str: &str) -> (String, String) {
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    let cli = Cli::try_parse_from(cli_str.split(' ')).expect("Could not parse args");
+    run(cli, &mut output, &mut error).expect("Failed to run");
+    let output = String::from_utf8(output).expect("Not UTF-8");
+    let error = String::from_utf8(error).expect("Not UTF-8");
+    (output, error)
+  }
+
+  #[test]
+  fn verify_cli() {
+    use clap::CommandFactory;
+    Cli::command().debug_assert()
+  }
+
+  #[test]
+  fn verify_stamp() {
+    let (output, error) =
+      run_test(" convert -t=America/New_York -p secs 1679258022 1676258186 1679258186 -o dsc -f");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        2023-03-19T16:36:26-0400
+        2023-03-19T16:33:42-0400
+        2023-02-12T22:16:26-0500
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn no_sort() {
+    let (output, error) = run_test(" convert 1679258022 1676258187 1679258186");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258022
+        1676258187
+        1679258186
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn sort_asc() {
+    let (output, error) = run_test(" convert 1679258022 1676258187 1679258186 -o asc");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1676258187
+        1679258022
+        1679258186
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn sort_dsc() {
+    let (output, error) = run_test(" convert 1679258022 1676258187 1679258186 -o dsc");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258186
+        1679258022
+        1676258187
+       "},
+      output
+    );
+  }
+
+  #[test]
+  fn millis() {
+    let (output, error) = run_test(" convert 1679661279000 1679661179000 1679661079000");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679661279000
+        1679661179000
+        1679661079000
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn mixed_input() {
+    let (output, error) =
+      run_test(" convert -p secs 1679258022 2023-03-19T16:36:26-0400 1679258186");
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258022
+        1679258186
+        1679258186
+      "},
+      output
+    );
+  }
+
+  #[test]
+  fn string_only() {
+    let (output, error) = run_test(
+      " convert 2023-03-19T16:36:26-0400 2023-03-19T16:33:42-0400 2023-02-12T22:16:26-0500",
+    );
+    assert_eq!("", error);
+    assert_eq!(
+      indoc! {"
+        1679258186000
+        1679258022000
+        1676258186000
+      "},
+      output
+    );
   }
 }

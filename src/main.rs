@@ -1,15 +1,14 @@
+mod common;
 mod convert;
 mod current;
 mod hduration;
 mod timezone;
-mod types;
 
 use clap::{Parser, Subcommand};
 use convert::ConvArgs;
 use current::CurrentArgs;
 use std::io::{self, Write};
 use timezone::TzArgs;
-use types::Handler;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -38,6 +37,13 @@ fn main() -> Result<(), io::Error> {
   let output = io::stdout();
   let error = io::stderr();
   run(cli, output, error)
+}
+
+pub trait Handler {
+  fn handle<W, E>(&self, output: W, error: E) -> Result<(), io::Error>
+  where
+    W: Write,
+    E: Write;
 }
 
 fn run<W, E>(cli: Cli, output: W, error: E) -> Result<(), io::Error>

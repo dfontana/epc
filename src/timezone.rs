@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use chrono_tz::TZ_VARIANTS;
 use clap::Args;
 
-use crate::types::Handler;
+use crate::Handler;
 
 #[derive(Args)]
 pub struct TzArgs {}

@@ -8,7 +8,7 @@ use chrono::{DateTime, FixedOffset};
 use clap::{Args, ValueEnum};
 
 use crate::{
-  common::{AtTimezoneArgs, CalcArgs, FormatArgs, Precision},
+  common::{AtTimezoneArgs, CalcArgs, FormatArgs, Precision, TruncateArgs},
   Handler,
 };
 
@@ -31,6 +31,9 @@ pub struct ConvArgs {
   #[command(flatten)]
   add: CalcArgs,
 
+  #[command(flatten)]
+  truncate: TruncateArgs,
+
   /// Mixture of Epoch timestamps in the given precision or date-time strings
   #[arg()]
   input: Vec<ConversionInput>,
@@ -52,6 +55,7 @@ impl Handler for ConvArgs {
       .iter()
       // Extract as datetime
       .map(|inp| inp.to_dt(&self.format.precision))
+      .map(|rdt| rdt.and_then(|dt| self.truncate.apply(dt)))
       // Convert to the given timezone
       .map(|rdt| rdt.map(|dt| dt.with_timezone(&into_tz)))
       // Apply addition

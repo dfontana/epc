@@ -17,7 +17,7 @@ impl FromStr for AutoTz {
     };
     pstr
       .parse::<Tz>()
-      .map(|t| AutoTz(t))
+      .map(AutoTz)
       .map_err(|_| format!("{} is not a known timezone", s))
   }
 }

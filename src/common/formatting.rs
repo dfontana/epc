@@ -23,19 +23,19 @@ impl FromStr for Format {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Precision {
   /// Seconds
-  SECS,
+  Secs,
   /// Milliseconds
-  MILLIS,
+  Millis,
   /// Nanoseconds
-  NANOS,
+  Nanos,
 }
 
 impl Precision {
   pub fn parse(&self, ts: i64) -> LocalResult<DateTime<Utc>> {
     match self {
-      Precision::SECS => Utc.timestamp_opt(ts, 0),
-      Precision::MILLIS => Utc.timestamp_millis_opt(ts),
-      Precision::NANOS => LocalResult::Single(Utc.timestamp_nanos(ts)),
+      Precision::Secs => Utc.timestamp_opt(ts, 0),
+      Precision::Millis => Utc.timestamp_millis_opt(ts),
+      Precision::Nanos => LocalResult::Single(Utc.timestamp_nanos(ts)),
     }
   }
 
@@ -44,9 +44,9 @@ impl Precision {
     T: TimeZone,
   {
     match self {
-      Precision::SECS => dt.timestamp(),
-      Precision::MILLIS => dt.timestamp_millis(),
-      Precision::NANOS => dt.timestamp_nanos(),
+      Precision::Secs => dt.timestamp(),
+      Precision::Millis => dt.timestamp_millis(),
+      Precision::Nanos => dt.timestamp_nanos(),
     }
   }
 }
@@ -61,7 +61,7 @@ pub struct FormatArgs {
   output_format: Option<Format>,
 
   /// What precision timestamps should be treated as
-  #[arg(value_enum, long, short, default_value_t=Precision::MILLIS)]
+  #[arg(value_enum, long, short, default_value_t=Precision::Millis)]
   pub precision: Precision,
 }
 
@@ -72,7 +72,7 @@ impl FormatArgs {
   {
     match &self.output_format {
       Some(fmt) => dt.format(&fmt.0).to_string(),
-      None => self.precision.as_stamp(&dt).to_string(),
+      None => self.precision.as_stamp(dt).to_string(),
     }
   }
 }

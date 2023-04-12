@@ -32,7 +32,7 @@ impl FromStr for HDuration {
       let next = chars.peek();
       let (idx, c) = next.unwrap_or(&(0, ' '));
 
-      let should_flush = next == None || (c.is_digit(10) && in_char);
+      let should_flush = next.is_none() || (c.is_ascii_digit() && in_char);
       match (should_flush, c) {
         (_, ' ') | (true, _) => {
           in_char = false;
@@ -45,12 +45,12 @@ impl FromStr for HDuration {
             .ok_or::<String>("Too large of duration".into())?;
           dbuf = c.to_digit(10).unwrap_or(0) as u64;
           cbuf = String::new();
-          if let None = chars.peek() {
+          if chars.peek().is_none() {
             break;
           }
         }
         (_, '-') if *idx == 0 => is_neg = true,
-        (_, c) if c.is_digit(10) => dbuf = dbuf * 10 + c.to_digit(10).unwrap() as u64,
+        (_, c) if c.is_ascii_digit() => dbuf = dbuf * 10 + c.to_digit(10).unwrap() as u64,
         (_, 'm' | 's' | 'n' | 'd' | 'h' | 'w') => {
           cbuf.push(*c);
           in_char = true;
@@ -59,7 +59,7 @@ impl FromStr for HDuration {
       }
       chars.next();
     }
-    return Ok(HDuration::new(sec, nano, is_neg));
+    Ok(HDuration::new(sec, nano, is_neg))
   }
 }
 

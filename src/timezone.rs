@@ -16,7 +16,6 @@ impl Handler for TzArgs {
   {
     TZ_VARIANTS
       .iter()
-      .map(|f| writeln!(&mut out, "{}", f))
-      .collect()
+      .try_for_each(|f| writeln!(&mut out, "{}", f))
   }
 }

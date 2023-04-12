@@ -3,7 +3,7 @@ use clap::Args;
 use std::io::{self, Write};
 
 use crate::{
-  common::{AtTimezoneArgs, FormatArgs},
+  common::{AtTimezoneArgs, CalcArgs, FormatArgs},
   Handler,
 };
 
@@ -14,20 +14,24 @@ pub struct CurrentArgs {
 
   #[command(flatten)]
   format: FormatArgs,
+
+  #[command(flatten)]
+  add: CalcArgs,
 }
 
 impl Handler for CurrentArgs {
-  fn handle<W, E>(&self, mut out: W, _err: E) -> Result<(), io::Error>
+  fn handle<W, E>(&self, mut out: W, mut err: E) -> Result<(), io::Error>
   where
     W: Write,
     E: Write,
   {
-    writeln!(
-      &mut out,
-      "{}",
-      self
-        .format
-        .format(&Utc::now().with_timezone(&self.timezone.get()))
-    )
+    let rdt = self
+      .add
+      .eval(Utc::now().with_timezone(&self.timezone.get()));
+    let dt = match rdt {
+      Err(e) => return write!(&mut err, "{}", e),
+      Ok(v) => v,
+    };
+    writeln!(&mut out, "{}", self.format.format(&dt))
   }
 }

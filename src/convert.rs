@@ -1,7 +1,6 @@
 use std::{
   cmp::Ordering,
   io::{self, Write},
-  ops::Neg,
   str::FromStr,
 };
 
@@ -9,17 +8,16 @@ use chrono::{DateTime, FixedOffset};
 use clap::{Args, ValueEnum};
 
 use crate::{
-  common::{AtTimezoneArgs, FormatArgs, Precision},
-  hduration::HDuration,
+  common::{AtTimezoneArgs, CalcArgs, FormatArgs, Precision},
   Handler,
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum Order {
   /// Ascending in time
-  ASC,
+  Asc,
   /// Descending in time
-  DSC,
+  Dsc,
 }
 
 #[derive(Args)]
@@ -30,20 +28,16 @@ pub struct ConvArgs {
   #[command(flatten)]
   format: FormatArgs,
 
+  #[command(flatten)]
+  add: CalcArgs,
+
   /// Mixture of Epoch timestamps in the given precision or date-time strings
   #[arg()]
   input: Vec<ConversionInput>,
 
-  // /// What precision timestamps should be treated as
-  // #[arg(value_enum, long, short, default_value_t=Precision::MILLIS)]
-  // precision: Precision,
   /// When supplying multiple timestamps what order to print them in
   #[arg(value_enum, long, short)]
   order: Option<Order>,
-
-  /// Add a human friendly duration to all times (can be negative)
-  #[arg(long, short = 'a')]
-  add: Option<HDuration>,
 }
 
 impl Handler for ConvArgs {
@@ -61,16 +55,7 @@ impl Handler for ConvArgs {
       // Convert to the given timezone
       .map(|rdt| rdt.map(|dt| dt.with_timezone(&into_tz)))
       // Apply addition
-      .map(|rdt| {
-        if let Some(dur) = &self.add {
-          chrono::Duration::from_std(dur.inner)
-            .map(|d| if dur.negative { d.neg() } else { d })
-            .map_err(|e| format!("{}", e))
-            .and_then(|d| rdt.map(|dt| dt + d))
-        } else {
-          rdt
-        }
-      })
+      .map(|rdt| rdt.and_then(|dt| self.add.eval(dt)))
       .collect::<Result<Vec<_>, _>>();
 
     // Sus out any errors now that we're done oeprating
@@ -81,16 +66,15 @@ impl Handler for ConvArgs {
 
     // Apply sorting rules
     dts.sort_by(|a, b| match self.order {
-      Some(Order::DSC) => Ord::cmp(&a, &b).reverse(),
-      Some(Order::ASC) => Ord::cmp(&a, &b),
+      Some(Order::Dsc) => Ord::cmp(&a, &b).reverse(),
+      Some(Order::Asc) => Ord::cmp(&a, &b),
       None => Ordering::Equal,
     });
 
     // Apply output formatting
     dts
       .iter()
-      .map(|dt| writeln!(&mut out, "{}", self.format.format(dt)))
-      .collect()
+      .try_for_each(|dt| writeln!(&mut out, "{}", self.format.format(dt)))
   }
 }
 
@@ -103,7 +87,7 @@ enum ConversionInput {
 impl ConversionInput {
   fn to_dt(&self, precision: &Precision) -> Result<DateTime<FixedOffset>, String> {
     match self {
-      ConversionInput::String(dt) => Ok(dt.clone()),
+      ConversionInput::String(dt) => Ok(*dt),
       ConversionInput::Stamp(ts) => precision
         .parse(*ts)
         .single()

@@ -1,5 +1,7 @@
 use std::{str::FromStr, time::Duration};
 
+use crate::common::Precision;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HDuration {
   pub inner: Duration,
@@ -66,13 +68,9 @@ impl FromStr for HDuration {
 fn flush(dbuf: u64, cbuf: &str) -> Result<(u64, u32), String> {
   let mut sec: u64 = 0;
   let mut nano: u32 = 0;
-  match cbuf {
-    "w" => sec += dbuf * 7 * 24 * 60 * 60,
-    "d" => sec += dbuf * 24 * 60 * 60,
-    "h" => sec += dbuf * 60 * 60,
-    "m" => sec += dbuf * 60,
-    "s" => sec += dbuf,
-    "ms" => {
+  let p = Precision::from_str(cbuf)?;
+  match p {
+    Precision::Millis => {
       sec += dbuf / 1000;
       let up = (dbuf % 1000)
         .try_into()
@@ -83,7 +81,7 @@ fn flush(dbuf: u64, cbuf: &str) -> Result<(u64, u32), String> {
         None => return Err("Too many milliseconds provided".into()),
       }
     }
-    "ns" => {
+    Precision::Nanos => {
       sec += dbuf / 1000000000;
       let up = (dbuf % 1000000000)
         .try_into()
@@ -94,7 +92,7 @@ fn flush(dbuf: u64, cbuf: &str) -> Result<(u64, u32), String> {
         None => return Err("Too many nanoseconds provided".into()),
       }
     }
-    _ => return Err("Missing units".into()),
+    _ => sec += dbuf * p.seconds_per() as u64,
   }
   Ok((sec, nano))
 }

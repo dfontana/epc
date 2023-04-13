@@ -2,9 +2,11 @@ use std::{fmt::Display, str::FromStr};
 
 use chrono::{
   format::{Item, StrftimeItems},
-  DateTime, LocalResult, TimeZone, Utc,
+  DateTime, TimeZone,
 };
-use clap::{Args, ValueEnum};
+use clap::Args;
+
+use super::Precision;
 
 #[derive(Clone)]
 struct Format(pub String);
@@ -16,45 +18,6 @@ impl FromStr for Format {
       Err("contains unknown specifier".into())
     } else {
       Ok(Format(s.into()))
-    }
-  }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum Precision {
-  /// Hours
-  Hours,
-  /// Minutes,
-  Mins,
-  /// Seconds
-  Secs,
-  /// Milliseconds
-  Millis,
-  /// Nanoseconds
-  Nanos,
-}
-
-impl Precision {
-  pub fn parse(&self, ts: i64) -> LocalResult<DateTime<Utc>> {
-    match self {
-      Precision::Hours => Utc.timestamp_opt(ts * 60 * 60, 0),
-      Precision::Mins => Utc.timestamp_opt(ts * 60, 0),
-      Precision::Secs => Utc.timestamp_opt(ts, 0),
-      Precision::Millis => Utc.timestamp_millis_opt(ts),
-      Precision::Nanos => LocalResult::Single(Utc.timestamp_nanos(ts)),
-    }
-  }
-
-  pub fn as_stamp<T>(&self, dt: &DateTime<T>) -> i64
-  where
-    T: TimeZone,
-  {
-    match self {
-      Precision::Hours => dt.timestamp() / (60 * 60),
-      Precision::Mins => dt.timestamp() / 60,
-      Precision::Secs => dt.timestamp(),
-      Precision::Millis => dt.timestamp_millis(),
-      Precision::Nanos => dt.timestamp_nanos(),
     }
   }
 }

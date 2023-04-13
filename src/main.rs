@@ -24,7 +24,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
   /// (default) Get the current epoch time
-  // TODO: Should truncate as well so we can round down the hour/minute/etc
   Current(CurrentArgs),
   /// Convert a list of epoch timestamps into date strings or vice versa
   Convert(ConvArgs),

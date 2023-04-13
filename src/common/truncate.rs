@@ -6,7 +6,10 @@ use super::Precision;
 #[derive(Args)]
 pub struct TruncateArgs {
   /// Truncate time starting from the given position onwards. Truncation
-  /// specifically means setting the temporal field to zero.
+  /// specifically means zeroing the epoch timestamp from that precision
+  /// onwards. This makes certain assumptions, like there being 24 hours
+  /// in a day, 7 days in a week, and 52 weeks in a year. Not all of these
+  /// properties are globally true.
   #[arg(value_enum, long, short = 'u')]
   truncate: Option<Precision>,
 }
@@ -17,18 +20,17 @@ impl TruncateArgs {
       return Ok(dt);
     };
 
-    let (stamp, precision) = match field {
-      Precision::Nanos => (dt.timestamp_nanos(), Precision::Nanos),
-      Precision::Millis => (dt.timestamp_millis(), Precision::Millis),
-      _ => (dt.timestamp(), Precision::Secs),
-    };
-
+    let (stamp, precision) = field.as_self(&dt);
     let new_stamp = match field {
-      Precision::Hours => (stamp / (24 * 60 * 60)) * 24 * 60 * 60,
-      Precision::Mins => (stamp / (60 * 60)) * 60 * 60,
-      Precision::Secs => (stamp / 60) * 60,
       Precision::Millis => (stamp / 1000) * 1000,
       Precision::Nanos => (stamp / 1000000) * 1000000,
+      _ => {
+        let per_next = field
+          .try_upcast()
+          .map(|p| p.seconds_per())
+          .unwrap_or_else(|| Precision::highest_next() * Precision::highest().seconds_per());
+        (stamp / per_next) * per_next
+      }
     };
 
     precision
@@ -53,7 +55,7 @@ mod test {
   #[case(1681330711220000120, Precision::Hours, 1681257600000000000)]
   fn apply(#[case] in_nanos: i64, #[case] pre: Precision, #[case] exp_nanos: i64) {
     let args = TruncateArgs {
-      position: Some(pre),
+      truncate: Some(pre),
     };
     let nanos = Precision::Nanos;
     let truncated_0 = args.apply(nanos.parse(in_nanos).unwrap().into());

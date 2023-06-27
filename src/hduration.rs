@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Duration};
+use std::{fmt::Display, str::FromStr, time::Duration};
 
 use crate::common::Precision;
 
@@ -6,14 +6,30 @@ use crate::common::Precision;
 pub struct HDuration {
   pub inner: Duration,
   pub negative: bool,
+  readable: String,
 }
 
 impl HDuration {
-  pub fn new(sec: u64, nano: u32, negative: bool) -> Self {
+  pub fn new(sec: u64, nano: u32, negative: bool, readable: &str) -> Self {
     HDuration {
       inner: Duration::new(sec, nano),
       negative,
+      // TODO: Consuming input like this will make inconsistent output,
+      //       we should parse something
+      readable: readable.into(),
     }
+  }
+}
+
+impl Display for HDuration {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.readable)
+  }
+}
+
+impl From<chrono::Duration> for HDuration {
+  fn from(value: chrono::Duration) -> Self {
+    todo!()
   }
 }
 
@@ -61,7 +77,7 @@ impl FromStr for HDuration {
       }
       chars.next();
     }
-    Ok(HDuration::new(sec, nano, is_neg))
+    Ok(HDuration::new(sec, nano, is_neg, s))
   }
 }
 
@@ -108,24 +124,27 @@ mod test {
   #[test]
   fn from_strt() {
     let input = "3w5d2h";
-    let expected = HDuration::new(2253600, 0, false);
+    let expected = HDuration::new(2253600, 0, false, input);
     assert_eq!(HDuration::from_str(input), Ok(expected))
   }
 
   #[rstest]
-  #[case("1s", HDuration::new(1, 0, false))]
-  #[case("0s", HDuration::new(0, 0, false))]
-  #[case("1ns", HDuration::new(0, 1, false))]
-  #[case("1s 10ns", HDuration::new(1, 10, false))]
-  #[case("10ns 1s", HDuration::new(1, 10, false))]
-  #[case("-1ns", HDuration::new(0, 1, true))]
-  #[case("-1s 1ns", HDuration::new(1, 1, true))]
-  #[case("5m", HDuration::new(300, 0, false))]
-  #[case("5h", HDuration::new(18000, 0, false))]
-  #[case("5d", HDuration::new(432000, 0, false))]
-  #[case("5w", HDuration::new(3024000, 0, false))]
-  #[case("3w 5d 2h 10m 7s 1ns", HDuration::new(2254207, 1, false))]
-  #[case("3w5d2h", HDuration::new(2253600, 0, false))]
+  #[case("1s", HDuration::new(1, 0, false, "1s"))]
+  #[case("0s", HDuration::new(0, 0, false, "0s"))]
+  #[case("1ns", HDuration::new(0, 1, false, "1ns"))]
+  #[case("1s 10ns", HDuration::new(1, 10, false, "1s 10ns"))]
+  #[case("10ns 1s", HDuration::new(1, 10, false, "10ns 1s"))]
+  #[case("-1ns", HDuration::new(0, 1, true, "-1ns"))]
+  #[case("-1s 1ns", HDuration::new(1, 1, true, "-1s 1ns"))]
+  #[case("5m", HDuration::new(300, 0, false, "5m"))]
+  #[case("5h", HDuration::new(18000, 0, false, "5h"))]
+  #[case("5d", HDuration::new(432000, 0, false, "5d"))]
+  #[case("5w", HDuration::new(3024000, 0, false, "5w"))]
+  #[case(
+    "3w 5d 2h 10m 7s 1ns",
+    HDuration::new(2254207, 1, false, "3w 5d 2h 10m 7s 1ns")
+  )]
+  #[case("3w5d2h", HDuration::new(2253600, 0, false, "3w5d2h"))]
   fn from_str(#[case] input: &str, #[case] expected: HDuration) {
     assert_eq!(HDuration::from_str(input), Ok(expected))
   }

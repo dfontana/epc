@@ -40,27 +40,6 @@ impl FromStr for Precision {
 }
 
 impl Precision {
-  pub fn highest_next() -> i64 {
-    52
-  }
-
-  pub fn highest() -> Self {
-    Precision::Weeks
-  }
-
-  pub fn try_upcast(&self) -> Option<Self> {
-    let p = match self {
-      Precision::Weeks => return None,
-      Precision::Days => Precision::Weeks,
-      Precision::Hours => Precision::Days,
-      Precision::Mins => Precision::Hours,
-      Precision::Secs => Precision::Mins,
-      Precision::Millis => Precision::Secs,
-      Precision::Nanos => Precision::Millis,
-    };
-    Some(p)
-  }
-
   pub fn try_downcast(&self) -> Option<Self> {
     let p = match self {
       Precision::Weeks => Precision::Days,
@@ -79,14 +58,6 @@ impl Precision {
       Precision::Millis => Utc.timestamp_millis_opt(ts),
       Precision::Nanos => LocalResult::Single(Utc.timestamp_nanos(ts)),
       _ => Utc.timestamp_opt(ts * self.seconds_per(), 0),
-    }
-  }
-
-  pub fn as_self<Tz: TimeZone>(&self, dt: &DateTime<Tz>) -> (i64, Self) {
-    match self {
-      Precision::Nanos => (dt.timestamp_nanos(), Precision::Nanos),
-      Precision::Millis => (dt.timestamp_millis(), Precision::Millis),
-      _ => (dt.timestamp(), Precision::Secs),
     }
   }
 

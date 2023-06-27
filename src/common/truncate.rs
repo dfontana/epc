@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, Datelike, Duration, DurationRound, FixedOffset};
 use clap::Args;
 
 use super::Precision;
@@ -7,8 +7,8 @@ use super::Precision;
 pub struct TruncateArgs {
   /// Truncate time starting from the given position onwards. Truncation
   /// specifically means zeroing the epoch timestamp from that precision
-  /// onwards. This makes certain assumptions, like there being 24 hours
-  /// in a day, 7 days in a week, and 52 weeks in a year. Not all of these
+  /// onwards. This makes certain assumptions, like there being 7 days
+  /// in a week, and 52 weeks in a year. Not all of these
   /// properties are globally true.
   #[arg(value_enum, long, short = 'u')]
   truncate: Option<Precision>,
@@ -20,24 +20,22 @@ impl TruncateArgs {
       return Ok(dt);
     };
 
-    let (stamp, precision) = field.as_self(&dt);
-    let new_stamp = match field {
-      Precision::Millis => (stamp / 1000) * 1000,
-      Precision::Nanos => (stamp / 1000000) * 1000000,
-      _ => {
-        let per_next = field
-          .try_upcast()
-          .map(|p| p.seconds_per())
-          .unwrap_or_else(|| Precision::highest_next() * Precision::highest().seconds_per());
-        (stamp / per_next) * per_next
-      }
+    let trunc_dur = match field {
+      Precision::Weeks | Precision::Days | Precision::Hours => Duration::days(1),
+      Precision::Mins => Duration::hours(1),
+      Precision::Secs => Duration::minutes(1),
+      Precision::Millis => Duration::seconds(1),
+      Precision::Nanos => Duration::milliseconds(1),
     };
-
-    precision
-      .parse(new_stamp)
-      .single()
-      .map(|dt| dt.into())
-      .ok_or_else(|| "Could not truncate".into())
+    let trunc = dt
+      .duration_trunc(trunc_dur)
+      .map_err(|e| format!("Could not truncate: {}", e))?;
+    let trunc = match field {
+      Precision::Weeks => trunc.with_month(1).and_then(|v| v.with_day(1)),
+      Precision::Days => trunc.with_day(1),
+      _ => Some(trunc),
+    };
+    trunc.ok_or_else(|| "Failed to truncate weeks/days".into())
   }
 }
 
@@ -53,6 +51,8 @@ mod test {
   #[case(1681330711220000120, Precision::Secs, 1681330680000000000)]
   #[case(1681330711220000120, Precision::Mins, 1681329600000000000)]
   #[case(1681330711220000120, Precision::Hours, 1681257600000000000)]
+  #[case(1681330711220000120, Precision::Days, 1680307200000000000)]
+  #[case(1681330711220000120, Precision::Weeks, 1672531200000000000)]
   fn apply(#[case] in_nanos: i64, #[case] pre: Precision, #[case] exp_nanos: i64) {
     let args = TruncateArgs {
       truncate: Some(pre),

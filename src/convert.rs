@@ -1,24 +1,15 @@
 use std::{
-  cmp::Ordering,
   io::{self, Write},
   str::FromStr,
 };
 
 use chrono::{DateTime, FixedOffset};
-use clap::{Args, ValueEnum};
+use clap::Args;
 
 use crate::{
-  common::{AtTimezoneArgs, CalcArgs, FormatArgs, Precision, TruncateArgs},
+  common::{AtTimezoneArgs, CalcArgs, FormatArgs, OrderArgs, Precision, TruncateArgs},
   Handler,
 };
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum Order {
-  /// Ascending in time
-  Asc,
-  /// Descending in time
-  Dsc,
-}
 
 #[derive(Args)]
 pub struct ConvArgs {
@@ -38,9 +29,8 @@ pub struct ConvArgs {
   #[arg()]
   input: Vec<ConversionInput>,
 
-  /// When supplying multiple timestamps what order to print them in
-  #[arg(value_enum, long, short)]
-  order: Option<Order>,
+  #[command(flatten)]
+  order: OrderArgs,
 }
 
 impl Handler for ConvArgs {
@@ -69,11 +59,7 @@ impl Handler for ConvArgs {
     };
 
     // Apply sorting rules
-    dts.sort_by(|a, b| match self.order {
-      Some(Order::Dsc) => Ord::cmp(&a, &b).reverse(),
-      Some(Order::Asc) => Ord::cmp(&a, &b),
-      None => Ordering::Equal,
-    });
+    self.order.apply(&mut dts);
 
     // Apply output formatting
     dts
@@ -82,14 +68,14 @@ impl Handler for ConvArgs {
   }
 }
 
-#[derive(Clone)]
-enum ConversionInput {
+#[derive(Clone, Debug)]
+pub enum ConversionInput {
   Stamp(i64),
   String(DateTime<FixedOffset>),
 }
 
 impl ConversionInput {
-  fn to_dt(&self, precision: &Precision) -> Result<DateTime<FixedOffset>, String> {
+  pub fn to_dt(&self, precision: &Precision) -> Result<DateTime<FixedOffset>, String> {
     match self {
       ConversionInput::String(dt) => Ok(*dt),
       ConversionInput::Stamp(ts) => precision

@@ -1,12 +1,14 @@
 mod common;
 mod convert;
 mod current;
+mod delta;
 mod hduration;
 mod timezone;
 
 use clap::{Parser, Subcommand};
 use convert::ConvArgs;
 use current::CurrentArgs;
+use delta::DeltaArgs;
 use std::io::{self, Write};
 use timezone::TzArgs;
 
@@ -29,7 +31,8 @@ enum Commands {
   Convert(ConvArgs),
   /// Get information on supported timezones
   Timezone(TzArgs),
-  // TODO: Delta. Eg get diff of N time-likes and print human legible
+  /// Get the difference between a list of timestamps and/or date strings
+  Delta(DeltaArgs),
 }
 
 fn main() -> Result<(), io::Error> {
@@ -55,6 +58,7 @@ where
     Some(Commands::Timezone(tza)) => tza.handle(output, error),
     Some(Commands::Convert(conv)) => conv.handle(output, error),
     Some(Commands::Current(curr)) => curr.handle(output, error),
+    Some(Commands::Delta(delt)) => delt.handle(output, error),
     None => cli.current.handle(output, error),
   }
 }

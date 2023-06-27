@@ -1,6 +1,6 @@
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
-use chrono::{DateTime, LocalResult, TimeZone, Utc};
+use chrono::{DateTime, Duration, LocalResult, TimeZone, Utc};
 use clap::ValueEnum;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -36,6 +36,21 @@ impl FromStr for Precision {
       _ => return Err(format!("Unknown precision: {}", s)),
     };
     Ok(p)
+  }
+}
+
+impl Display for Precision {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let v = match self {
+      Precision::Weeks => "weeks",
+      Precision::Days => "days",
+      Precision::Hours => "hours",
+      Precision::Mins => "mins",
+      Precision::Secs => "seconds",
+      Precision::Millis => "milliseconds",
+      Precision::Nanos => "nanoseconds",
+    };
+    write!(f, "{}", v)
   }
 }
 
@@ -82,6 +97,8 @@ impl Precision {
     }
   }
 
+  /// Convert the given datetime into this precision, capping at
+  /// seconds to prevent loss. See as_self_lossy for a lossy version.
   pub fn as_self<Tz: TimeZone>(&self, dt: &DateTime<Tz>) -> (i64, Self) {
     match self {
       Precision::Nanos => (dt.timestamp_nanos(), Precision::Nanos),
@@ -90,6 +107,13 @@ impl Precision {
     }
   }
 
+  /// Convert the given duration into this precision, losing precision
+  /// for anything greater than seconds (truncating downwards)
+  pub fn as_self_lossy(&self, dur: Duration) -> i64 {
+    todo!()
+  }
+
+  /// The number of seconds in this precision tier. 0 if less than 1
   pub fn seconds_per(&self) -> i64 {
     match self {
       Precision::Weeks => 7 * self.try_downcast().map(|p| p.seconds_per()).unwrap_or(0),

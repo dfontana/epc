@@ -4,7 +4,7 @@ use std::{
   str::FromStr,
 };
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use clap::{Args, ValueEnum};
 
 use crate::{
@@ -36,7 +36,19 @@ pub struct ConvArgs {
 
   /// Mixture of Epoch timestamps in the given precision or date-time strings
   #[arg()]
-  input: Vec<ConversionInput>,
+  input: Vec<String>,
+
+  /// Input format for datetime strings (strftime-style).
+  /// When specified, all string inputs must match this format.
+  /// If not specified, auto-detects timestamps and RFC3339/ISO8601 formats.
+  /// When a timezone is omitted, it's assumed UTC
+  /// When a time is omitted, it's assumed Midnight UTC
+  ///
+  /// %Y(year) %m(month) %d(day) %H(hour) %M(min) %S(sec) %.3f(millis) %z(tz) %:z(tz+colon)
+  ///
+  /// Examples: "%Y-%m-%d" "%d/%m/%Y %H:%M:%S" "%Y-%m-%dT%H:%M:%S%:z"
+  #[arg(long, short = 'i')]
+  input_format: Option<String>,
 
   /// When supplying multiple timestamps what order to print them in
   #[arg(value_enum, long, short)]
@@ -50,11 +62,15 @@ impl Handler for ConvArgs {
     E: Write,
   {
     let into_tz = self.timezone.get();
+    let input_format = self.input_format.as_deref();
+
     let maybe_datetimes = self
       .input
       .iter()
+      // Parse with custom format or auto-detect
+      .map(|inp| ConversionInput::from_str_with_format(inp, input_format))
       // Extract as datetime
-      .map(|inp| inp.to_dt(&self.format.precision))
+      .map(|rdt| rdt.and_then(|inp| inp.to_dt(&self.format.precision)))
       .map(|rdt| rdt.and_then(|dt| self.truncate.apply(dt)))
       // Convert to the given timezone
       .map(|rdt| rdt.map(|dt| dt.with_timezone(&into_tz)))
@@ -82,13 +98,52 @@ impl Handler for ConvArgs {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ConversionInput {
   Stamp(i64),
   String(DateTime<FixedOffset>),
 }
 
 impl ConversionInput {
+  /// Parse with optional custom format
+  fn from_str_with_format(arg: &str, format: Option<&str>) -> Result<Self, String> {
+    // Try timestamp first (always)
+    if let Ok(ts) = arg.parse::<i64>() {
+      return Ok(ConversionInput::Stamp(ts));
+    }
+
+    match format {
+      Some(fmt) => {
+        // Try parsing with timezone first
+        if let Ok(dt) = DateTime::parse_from_str(arg, fmt) {
+          return Ok(ConversionInput::String(dt));
+        }
+
+        // Fall back to naive datetime (assume UTC)
+        if let Ok(naive) = NaiveDateTime::parse_from_str(arg, fmt) {
+          let dt_utc: DateTime<FixedOffset> = Utc.from_utc_datetime(&naive).into();
+          return Ok(ConversionInput::String(dt_utc));
+        }
+
+        // Try date-only parsing (assume midnight UTC)
+        if let Ok(date) = NaiveDate::parse_from_str(arg, fmt) {
+          let naive = date.and_hms_opt(0, 0, 0).ok_or("Invalid date")?;
+          let dt_utc: DateTime<FixedOffset> = Utc.from_utc_datetime(&naive).into();
+          return Ok(ConversionInput::String(dt_utc));
+        }
+
+        Err(format!("Could not parse '{}' with format '{}'", arg, fmt))
+      }
+      None => {
+        // Existing auto-detection logic
+        match arg.parse::<DateTime<FixedOffset>>() {
+          Ok(dt) => Ok(ConversionInput::String(dt)),
+          Err(_) => Err(format!("Could not parse: {}", arg)),
+        }
+      }
+    }
+  }
+
   fn to_dt(&self, precision: &Precision) -> Result<DateTime<FixedOffset>, String> {
     match self {
       ConversionInput::String(dt) => Ok(*dt),
@@ -117,9 +172,12 @@ impl FromStr for ConversionInput {
 
 #[cfg(test)]
 mod test {
+  use super::ConversionInput;
   use crate::{run, Cli};
+  use chrono::DateTime;
   use clap::Parser;
   use indoc::indoc;
+  use rstest::*;
 
   fn run_test(cli_str: &str) -> (String, String) {
     let mut output = Vec::new();
@@ -129,6 +187,126 @@ mod test {
     let output = String::from_utf8(output).expect("Not UTF-8");
     let error = String::from_utf8(error).expect("Not UTF-8");
     (output, error)
+  }
+
+  #[rstest]
+  #[case("2023-07-15", "%Y-%m-%d", Some("2023-07-15T00:00:00+00:00"))]
+  #[case("2023/07/15", "%Y/%m/%d", Some("2023-07-15T00:00:00+00:00"))]
+  #[case("15.07.2023", "%d.%m.%Y", Some("2023-07-15T00:00:00+00:00"))]
+  #[case(
+    "2023-07-15 14:30:45",
+    "%Y-%m-%d %H:%M:%S",
+    Some("2023-07-15T14:30:45+00:00")
+  )]
+  #[case(
+    "2023-07-15T14:30:45",
+    "%Y-%m-%dT%H:%M:%S",
+    Some("2023-07-15T14:30:45+00:00")
+  )]
+  #[case(
+    "2023-07-15 14:30:45.123",
+    "%Y-%m-%d %H:%M:%S%.3f",
+    Some("2023-07-15T14:30:45.123+00:00")
+  )]
+  #[case(
+    "2023-07-15 14:30:45+02:00",
+    "%Y-%m-%d %H:%M:%S%:z",
+    Some("2023-07-15T14:30:45+02:00")
+  )]
+  #[case(
+    "2023-07-15 14:30:45 +0200",
+    "%Y-%m-%d %H:%M:%S %z",
+    Some("2023-07-15T14:30:45+02:00")
+  )]
+  #[case("20230715_143045", "%Y%m%d_%H%M%S", Some("2023-07-15T14:30:45+00:00"))]
+  #[case(
+    "07.15.2023 14:30",
+    "%m.%d.%Y %H:%M",
+    Some("2023-07-15T14:30:00+00:00")
+  )]
+  #[case("2023-07-15", "%Y-%m", None)] // Format mismatch
+  #[case("invalid", "%Y-%m-%d", None)] // Invalid input
+  #[case("2023-13-15", "%Y-%m-%d", None)] // Invalid month
+  fn test_custom_format_parsing(
+    #[case] input: &str,
+    #[case] format: &str,
+    #[case] expected_str: Option<&str>,
+  ) {
+    let result = ConversionInput::from_str_with_format(input, Some(format));
+
+    match expected_str {
+      Some(estr) => {
+        let expected = ConversionInput::String(
+          DateTime::parse_from_rfc3339(estr).expect("Test error, invalid expected"),
+        );
+        assert!(
+          result.is_ok(),
+          "Failed to parse '{}' with format '{}': {:?}",
+          input,
+          format,
+          result
+        );
+        let conversion = result.unwrap();
+        assert_eq!(
+          conversion, expected,
+          "Parsed datetime doesn't match expected for input '{}' with format '{}'",
+          input, format
+        );
+      }
+      None => {
+        assert!(
+          result.is_err(),
+          "Expected parsing to fail for input '{}' with format '{}', but got: {:?}",
+          input,
+          format,
+          result
+        );
+      }
+    }
+  }
+
+  #[rstest]
+  #[case("2023-07-15 14:30:45", "%Y-%m-%d %H:%M:%S")] // Naive -> UTC
+  #[case("2023-07-15 14:30:45+02:00", "%Y-%m-%d %H:%M:%S%:z")] // With offset
+  fn test_timezone_handling(#[case] input: &str, #[case] format: &str) {
+    let result = ConversionInput::from_str_with_format(input, Some(format));
+    assert!(result.is_ok(), "Failed to parse: {}", input);
+
+    if let Ok(ConversionInput::String(dt)) = result {
+      // Should have valid timezone information
+      let offset_secs = dt.offset().local_minus_utc().abs();
+      assert!(
+        offset_secs <= 24 * 3600,
+        "Invalid offset: {} seconds",
+        offset_secs
+      );
+    }
+  }
+
+  #[test]
+  fn test_cli_with_input_format_basic() {
+    let (output, error) = run_test(" convert -i %Y-%m-%d 2023-07-15 2023-07-16");
+    assert_eq!("", error);
+    // Should output timestamps for the parsed dates
+    assert!(output.contains("1689379200000")); // 2023-07-15 as millis
+    assert!(output.contains("1689465600000")); // 2023-07-16 as millis
+  }
+
+  #[test]
+  fn test_cli_with_input_format_time() {
+    // Test datetime format without quotes to avoid shell parsing issues in test
+    let (output, error) = run_test(" convert -i %Y-%m-%dT%H:%M:%S 2023-07-15T14:30:45");
+    assert_eq!("", error);
+    assert!(output.contains("1689431445000")); // Expected timestamp
+  }
+
+  #[test]
+  fn test_cli_mixed_input_with_format() {
+    let (output, error) = run_test(" convert -i %Y-%m-%d 1679258022 2023-07-15");
+    assert_eq!("", error);
+    // Should handle both timestamp and formatted date
+    assert!(output.contains("1679258022"));
+    assert!(output.contains("1689379200000"));
   }
 
   #[test]

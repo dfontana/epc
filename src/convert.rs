@@ -1,5 +1,6 @@
 use std::{
   cmp::Ordering,
+  fmt::Display,
   io::{self, Write},
   str::FromStr,
 };
@@ -53,6 +54,10 @@ pub struct ConvArgs {
   /// When supplying multiple timestamps what order to print them in
   #[arg(value_enum, long, short)]
   order: Option<Order>,
+
+  /// Display results in a table format with input and output columns
+  #[arg(long)]
+  table: bool,
 }
 
 impl Handler for ConvArgs {
@@ -64,37 +69,110 @@ impl Handler for ConvArgs {
     let into_tz = self.timezone.get();
     let input_format = self.input_format.as_deref();
 
-    let maybe_datetimes = self
+    // Process inputs and pair them with their original strings
+    let maybe_pairs = self
       .input
       .iter()
-      // Parse with custom format or auto-detect
-      .map(|inp| ConversionInput::from_str_with_format(inp, input_format))
-      // Extract as datetime
-      .map(|rdt| rdt.and_then(|inp| inp.to_dt(&self.format.precision)))
-      .map(|rdt| rdt.and_then(|dt| self.truncate.apply(dt)))
-      // Convert to the given timezone
-      .map(|rdt| rdt.map(|dt| dt.with_timezone(&into_tz)))
-      // Apply addition
-      .map(|rdt| rdt.and_then(|dt| self.add.eval(dt)))
+      .map(|inp| {
+        ConversionInput::from_str_with_format(inp, input_format)
+          .and_then(|ci| ci.to_dt(&self.format.precision))
+          .and_then(|dt| self.truncate.apply(dt))
+          .map(|dt| dt.with_timezone(&into_tz))
+          .and_then(|dt| self.add.eval(dt))
+          .map(|dt| (inp, dt))
+      })
       .collect::<Result<Vec<_>, _>>();
 
-    // Sus out any errors now that we're done oeprating
-    let mut dts = match maybe_datetimes {
+    // Sus out any errors now that we're done operating
+    let mut pairs = match maybe_pairs {
       Err(e) => return writeln!(&mut err, "{}", e),
-      Ok(dts) => dts,
+      Ok(pairs) => pairs,
     };
 
     // Apply sorting rules
-    dts.sort_by(|a, b| match self.order {
+    pairs.sort_by(|(_, a), (_, b)| match self.order {
       Some(Order::Dsc) => Ord::cmp(&a, &b).reverse(),
       Some(Order::Asc) => Ord::cmp(&a, &b),
       None => Ordering::Equal,
     });
 
     // Apply output formatting
-    dts
+    if self.table {
+      self.format_table(&mut out, &pairs)
+    } else {
+      pairs
+        .iter()
+        .try_for_each(|(_, dt)| writeln!(&mut out, "{}", self.format.format(dt)))
+    }
+  }
+}
+
+impl ConvArgs {
+  fn format_table<W, T>(
+    &self,
+    out: &mut W,
+    pairs: &[(&String, DateTime<T>)],
+  ) -> Result<(), io::Error>
+  where
+    W: Write,
+    T: TimeZone,
+    T::Offset: Display,
+  {
+    if pairs.is_empty() {
+      return Ok(());
+    }
+
+    // Format all outputs
+    let outputs: Vec<String> = pairs.iter().map(|(_, dt)| self.format.format(dt)).collect();
+
+    // Calculate column widths
+    let input_width = pairs
       .iter()
-      .try_for_each(|dt| writeln!(&mut out, "{}", self.format.format(dt)))
+      .map(|(s, _)| s.len())
+      .max()
+      .unwrap_or(0)
+      .max("Input".len());
+    let output_width = outputs
+      .iter()
+      .map(|s| s.len())
+      .max()
+      .unwrap_or(0)
+      .max("Output".len());
+
+    // Print header
+    writeln!(
+      out,
+      "┌─{:─<input_width$}─┬─{:─<output_width$}─┐",
+      "", ""
+    )?;
+    writeln!(
+      out,
+      "│ {:input_width$} │ {:output_width$} │",
+      "Input", "Output"
+    )?;
+    writeln!(
+      out,
+      "├─{:─<input_width$}─┼─{:─<output_width$}─┤",
+      "", ""
+    )?;
+
+    // Print rows
+    for ((input, _), output) in pairs.iter().zip(outputs.iter()) {
+      writeln!(
+        out,
+        "│ {:input_width$} │ {:output_width$} │",
+        input, output
+      )?;
+    }
+
+    // Print footer
+    writeln!(
+      out,
+      "└─{:─<input_width$}─┴─{:─<output_width$}─┘",
+      "", ""
+    )?;
+
+    Ok(())
   }
 }
 
@@ -415,5 +493,62 @@ mod test {
       "},
       output
     );
+  }
+
+  #[test]
+  fn table_format_basic() {
+    let (output, error) = run_test(" convert --table 1679258022 1676258186 1679258186");
+    assert_eq!("", error);
+    assert!(output.contains("Input"));
+    assert!(output.contains("Output"));
+    assert!(output.contains("1679258022"));
+    assert!(output.contains("1676258186"));
+    assert!(output.contains("1679258186"));
+    // Verify table borders
+    assert!(output.contains("┌─"));
+    assert!(output.contains("└─"));
+  }
+
+  #[test]
+  fn table_format_with_formatting() {
+    let (output, error) = run_test(" convert --table -f -p secs 1679258022 1676258186");
+    assert_eq!("", error);
+    assert!(output.contains("Input"));
+    assert!(output.contains("Output"));
+    assert!(output.contains("1679258022"));
+    assert!(output.contains("1676258186"));
+    assert!(output.contains("2023-03-19T20:33:42"));
+    assert!(output.contains("2023-02-13T03:16:26"));
+  }
+
+  #[test]
+  fn table_format_with_sorting() {
+    let (output, error) = run_test(" convert --table -f -p secs -o dsc 1679258022 1676258186 1679258186");
+    assert_eq!("", error);
+    // Verify table contains all inputs
+    assert!(output.contains("1679258022"));
+    assert!(output.contains("1676258186"));
+    assert!(output.contains("1679258186"));
+    // Verify sorting is applied (outputs should be in descending order)
+    let lines: Vec<&str> = output.lines().collect();
+    // Find the data rows (skip header and separator)
+    let data_rows: Vec<&str> = lines
+      .iter()
+      .filter(|l| l.contains("2023-"))
+      .copied()
+      .collect();
+    assert_eq!(3, data_rows.len());
+    // First data row should contain the latest timestamp
+    assert!(data_rows[0].contains("2023-03-19T20:36:26"));
+  }
+
+  #[test]
+  fn table_format_with_custom_input() {
+    let (output, error) = run_test(" convert --table -i %Y-%m-%d -f 2023-07-15 2023-07-16");
+    assert_eq!("", error);
+    assert!(output.contains("2023-07-15"));
+    assert!(output.contains("2023-07-16"));
+    assert!(output.contains("2023-07-15T00:00:00"));
+    assert!(output.contains("2023-07-16T00:00:00"));
   }
 }

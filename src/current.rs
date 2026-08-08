@@ -1,5 +1,5 @@
-use chrono::Utc;
 use clap::Args;
+use jiff::{tz::TimeZone, Timestamp};
 use std::io::{self, Write};
 
 use crate::{
@@ -30,8 +30,8 @@ impl Handler for CurrentArgs {
   {
     let rdt = self
       .truncate
-      .apply(Utc::now().into())
-      .map(|dt| dt.with_timezone(&self.timezone.get()))
+      .apply(Timestamp::now().to_zoned(TimeZone::UTC))
+      .map(|dt| dt.with_time_zone(self.timezone.get()))
       .and_then(|dt| self.add.eval(dt));
     let dt = match rdt {
       Err(e) => return write!(&mut err, "{}", e),

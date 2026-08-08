@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
-use chrono_tz::TZ_VARIANTS;
 use clap::Args;
+use jiff::tz;
 
 use crate::Handler;
 
@@ -14,8 +14,8 @@ impl Handler for TzArgs {
     W: Write,
     E: Write,
   {
-    TZ_VARIANTS
-      .iter()
-      .try_for_each(|f| writeln!(&mut out, "{}", f))
+    tz::db()
+      .available()
+      .try_for_each(|name| writeln!(&mut out, "{}", name))
   }
 }

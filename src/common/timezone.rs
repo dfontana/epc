@@ -1,22 +1,19 @@
 use std::str::FromStr;
 
-use chrono_tz::Tz;
 use clap::Args;
+use jiff::tz::TimeZone;
 
 #[derive(Clone)]
-pub struct AutoTz(pub Tz);
+pub struct AutoTz(pub TimeZone);
 
 impl FromStr for AutoTz {
   type Err = String;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    let pstr = if s == "local" {
-      iana_time_zone::get_timezone().map_err(|_| "Failed to lookup system timezone")?
-    } else {
-      s.to_string()
-    };
-    pstr
-      .parse::<Tz>()
+    if s == "local" {
+      return Ok(AutoTz(TimeZone::system()));
+    }
+    TimeZone::get(s)
       .map(AutoTz)
       .map_err(|_| format!("{} is not a known timezone", s))
   }
@@ -31,7 +28,11 @@ pub struct AtTimezoneArgs {
 }
 
 impl AtTimezoneArgs {
-  pub fn get(&self) -> Tz {
-    self.at_timezone.as_ref().map(|v| v.0).unwrap_or(Tz::UTC)
+  pub fn get(&self) -> TimeZone {
+    self
+      .at_timezone
+      .as_ref()
+      .map(|v| v.0.clone())
+      .unwrap_or(TimeZone::UTC)
   }
 }

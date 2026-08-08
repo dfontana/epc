@@ -1,7 +1,6 @@
 mod common;
 mod convert;
 mod current;
-mod hduration;
 mod timezone;
 
 use clap::{Parser, Subcommand};

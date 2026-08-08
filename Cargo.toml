@@ -6,12 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrono = "0.4.24"
-chrono-tz = {version="0.8.1", features=["case-insensitive"]}
-clap = {version = "4.1.9", features=["derive"]}
-iana-time-zone = "0.1.55"
-itertools = "0.10.5"
+clap = { version = "4.6.6", features = ["derive"] }
+jiff = "0.2.35"
 
 [dev-dependencies]
-indoc = "2.0.1"
-rstest = "0.17.0"
+indoc = "2.0.7"
+rstest = "0.26.1"

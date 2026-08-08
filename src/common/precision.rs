@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
-use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use clap::ValueEnum;
+use jiff::{Timestamp, Zoned};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Precision {
@@ -53,11 +53,14 @@ impl Precision {
     Some(p)
   }
 
-  pub fn parse(&self, ts: i64) -> LocalResult<DateTime<Utc>> {
+  pub fn parse(&self, ts: i64) -> Result<Timestamp, String> {
     match self {
-      Precision::Millis => Utc.timestamp_millis_opt(ts),
-      Precision::Nanos => LocalResult::Single(Utc.timestamp_nanos(ts)),
-      _ => Utc.timestamp_opt(ts * self.seconds_per(), 0),
+      Precision::Millis => Timestamp::from_millisecond(ts).map_err(|e| e.to_string()),
+      Precision::Nanos => Timestamp::from_nanosecond(ts.into()).map_err(|e| e.to_string()),
+      _ => ts
+        .checked_mul(self.seconds_per())
+        .ok_or_else(|| format!("Could not parse: {}", ts))
+        .and_then(|seconds| Timestamp::from_second(seconds).map_err(|e| e.to_string())),
     }
   }
 
@@ -73,15 +76,13 @@ impl Precision {
     }
   }
 
-  pub fn as_stamp<T>(&self, dt: &DateTime<T>) -> i64
-  where
-    T: TimeZone,
-  {
+  pub fn as_stamp(&self, dt: &Zoned) -> i128 {
+    let timestamp = dt.timestamp();
     match self {
-      Precision::Secs => dt.timestamp(),
-      Precision::Millis => dt.timestamp_millis(),
-      Precision::Nanos => dt.timestamp_nanos(),
-      _ => dt.timestamp() / self.seconds_per(),
+      Precision::Secs => timestamp.as_second().into(),
+      Precision::Millis => timestamp.as_millisecond().into(),
+      Precision::Nanos => timestamp.as_nanosecond(),
+      _ => (timestamp.as_second() / self.seconds_per()).into(),
     }
   }
 }

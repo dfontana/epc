@@ -1,12 +1,10 @@
 use std::{
   cmp::Ordering,
-  fmt::Display,
   io::{self, Write},
-  str::FromStr,
 };
 
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use clap::{Args, ValueEnum};
+use jiff::{fmt::strtime, tz::TimeZone, Timestamp, Zoned};
 
 use crate::{
   common::{AtTimezoneArgs, CalcArgs, FormatArgs, Precision, TruncateArgs},
@@ -69,7 +67,6 @@ impl Handler for ConvArgs {
     let into_tz = self.timezone.get();
     let input_format = self.input_format.as_deref();
 
-    // Process inputs and pair them with their original strings
     let maybe_pairs = self
       .input
       .iter()
@@ -77,26 +74,23 @@ impl Handler for ConvArgs {
         ConversionInput::from_str_with_format(inp, input_format)
           .and_then(|ci| ci.to_dt(&self.format.precision))
           .and_then(|dt| self.truncate.apply(dt))
-          .map(|dt| dt.with_timezone(&into_tz))
+          .map(|dt| dt.with_time_zone(into_tz.clone()))
           .and_then(|dt| self.add.eval(dt))
           .map(|dt| (inp, dt))
       })
       .collect::<Result<Vec<_>, _>>();
 
-    // Sus out any errors now that we're done operating
     let mut pairs = match maybe_pairs {
       Err(e) => return writeln!(&mut err, "{}", e),
       Ok(pairs) => pairs,
     };
 
-    // Apply sorting rules
     pairs.sort_by(|(_, a), (_, b)| match self.order {
-      Some(Order::Dsc) => Ord::cmp(&a, &b).reverse(),
-      Some(Order::Asc) => Ord::cmp(&a, &b),
+      Some(Order::Dsc) => Ord::cmp(a, b).reverse(),
+      Some(Order::Asc) => Ord::cmp(a, b),
       None => Ordering::Equal,
     });
 
-    // Apply output formatting
     if self.table {
       self.format_table(&mut out, &pairs)
     } else {
@@ -108,24 +102,15 @@ impl Handler for ConvArgs {
 }
 
 impl ConvArgs {
-  fn format_table<W, T>(
-    &self,
-    out: &mut W,
-    pairs: &[(&String, DateTime<T>)],
-  ) -> Result<(), io::Error>
+  fn format_table<W>(&self, out: &mut W, pairs: &[(&String, Zoned)]) -> Result<(), io::Error>
   where
     W: Write,
-    T: TimeZone,
-    T::Offset: Display,
   {
     if pairs.is_empty() {
       return Ok(());
     }
 
-    // Format all outputs
     let outputs: Vec<String> = pairs.iter().map(|(_, dt)| self.format.format(dt)).collect();
-
-    // Calculate column widths
     let input_width = pairs
       .iter()
       .map(|(s, _)| s.len())
@@ -139,39 +124,19 @@ impl ConvArgs {
       .unwrap_or(0)
       .max("Output".len());
 
-    // Print header
-    writeln!(
-      out,
-      "┌─{:─<input_width$}─┬─{:─<output_width$}─┐",
-      "", ""
-    )?;
+    writeln!(out, "┌─{:─<input_width$}─┬─{:─<output_width$}─┐", "", "")?;
     writeln!(
       out,
       "│ {:input_width$} │ {:output_width$} │",
       "Input", "Output"
     )?;
-    writeln!(
-      out,
-      "├─{:─<input_width$}─┼─{:─<output_width$}─┤",
-      "", ""
-    )?;
+    writeln!(out, "├─{:─<input_width$}─┼─{:─<output_width$}─┤", "", "")?;
 
-    // Print rows
     for ((input, _), output) in pairs.iter().zip(outputs.iter()) {
-      writeln!(
-        out,
-        "│ {:input_width$} │ {:output_width$} │",
-        input, output
-      )?;
+      writeln!(out, "│ {:input_width$} │ {:output_width$} │", input, output)?;
     }
 
-    // Print footer
-    writeln!(
-      out,
-      "└─{:─<input_width$}─┴─{:─<output_width$}─┘",
-      "", ""
-    )?;
-
+    writeln!(out, "└─{:─<input_width$}─┴─{:─<output_width$}─┘", "", "")?;
     Ok(())
   }
 }
@@ -179,83 +144,61 @@ impl ConvArgs {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ConversionInput {
   Stamp(i64),
-  String(DateTime<FixedOffset>),
+  String(Zoned),
 }
 
 impl ConversionInput {
-  /// Parse with optional custom format
   fn from_str_with_format(arg: &str, format: Option<&str>) -> Result<Self, String> {
-    // Try timestamp first (always)
     if let Ok(ts) = arg.parse::<i64>() {
       return Ok(ConversionInput::Stamp(ts));
     }
 
     match format {
       Some(fmt) => {
-        // Try parsing with timezone first
-        if let Ok(dt) = DateTime::parse_from_str(arg, fmt) {
-          return Ok(ConversionInput::String(dt));
-        }
-
-        // Fall back to naive datetime (assume UTC)
-        if let Ok(naive) = NaiveDateTime::parse_from_str(arg, fmt) {
-          let dt_utc: DateTime<FixedOffset> = Utc.from_utc_datetime(&naive).into();
-          return Ok(ConversionInput::String(dt_utc));
-        }
-
-        // Try date-only parsing (assume midnight UTC)
-        if let Ok(date) = NaiveDate::parse_from_str(arg, fmt) {
-          let naive = date.and_hms_opt(0, 0, 0).ok_or("Invalid date")?;
-          let dt_utc: DateTime<FixedOffset> = Utc.from_utc_datetime(&naive).into();
-          return Ok(ConversionInput::String(dt_utc));
-        }
-
-        Err(format!("Could not parse '{}' with format '{}'", arg, fmt))
+        let parsed = strtime::parse(fmt, arg)
+          .map_err(|_| format!("Could not parse '{}' with format '{}'", arg, fmt))?;
+        let zoned = parsed
+          .to_zoned()
+          .or_else(|_| {
+            parsed
+              .to_datetime()
+              .and_then(|dt| dt.to_zoned(TimeZone::UTC))
+          })
+          .map_err(|_| format!("Could not parse '{}' with format '{}'", arg, fmt))?;
+        Ok(ConversionInput::String(zoned))
       }
-      None => {
-        // Existing auto-detection logic
-        match arg.parse::<DateTime<FixedOffset>>() {
-          Ok(dt) => Ok(ConversionInput::String(dt)),
-          Err(_) => Err(format!("Could not parse: {}", arg)),
-        }
-      }
+      None => Zoned::strptime("%Y-%m-%dT%H:%M:%S%.f%z", arg)
+        .or_else(|_| Zoned::strptime("%Y-%m-%dT%H:%M:%S%.f%:z", arg))
+        .or_else(|_| {
+          arg
+            .parse::<Timestamp>()
+            .map(|timestamp| timestamp.to_zoned(TimeZone::UTC))
+        })
+        .map(ConversionInput::String)
+        .map_err(|_| format!("Could not parse: {}", arg)),
     }
   }
 
-  fn to_dt(&self, precision: &Precision) -> Result<DateTime<FixedOffset>, String> {
+  fn to_dt(&self, precision: &Precision) -> Result<Zoned, String> {
     match self {
-      ConversionInput::String(dt) => Ok(*dt),
+      ConversionInput::String(dt) => Ok(dt.clone()),
       ConversionInput::Stamp(ts) => precision
         .parse(*ts)
-        .single()
-        .map(|dt| dt.into())
-        .ok_or_else(|| format!("Could not parse: {}", ts)),
-    }
-  }
-}
-
-impl FromStr for ConversionInput {
-  type Err = String;
-
-  fn from_str(arg: &str) -> Result<Self, Self::Err> {
-    match arg.parse::<i64>() {
-      Ok(ts) => Ok(ConversionInput::Stamp(ts)),
-      Err(_) => match arg.parse::<DateTime<FixedOffset>>() {
-        Ok(dt) => Ok(ConversionInput::String(dt)),
-        Err(_) => Err(format!("Could not parse: {}", arg)),
-      },
+        .map(|timestamp| timestamp.to_zoned(TimeZone::UTC))
+        .map_err(|_| format!("Could not parse: {}", ts)),
     }
   }
 }
 
 #[cfg(test)]
 mod test {
-  use super::ConversionInput;
-  use crate::{run, Cli};
-  use chrono::DateTime;
   use clap::Parser;
   use indoc::indoc;
+  use jiff::Timestamp;
   use rstest::*;
+
+  use super::ConversionInput;
+  use crate::{run, Cli};
 
   fn run_test(cli_str: &str) -> (String, String) {
     let mut output = Vec::new();
@@ -268,121 +211,87 @@ mod test {
   }
 
   #[rstest]
-  #[case("2023-07-15", "%Y-%m-%d", Some("2023-07-15T00:00:00+00:00"))]
-  #[case("2023/07/15", "%Y/%m/%d", Some("2023-07-15T00:00:00+00:00"))]
-  #[case("15.07.2023", "%d.%m.%Y", Some("2023-07-15T00:00:00+00:00"))]
+  #[case("2023-07-15", "%Y-%m-%d", Some("2023-07-15T00:00:00Z"))]
+  #[case("2023/07/15", "%Y/%m/%d", Some("2023-07-15T00:00:00Z"))]
+  #[case("15.07.2023", "%d.%m.%Y", Some("2023-07-15T00:00:00Z"))]
   #[case(
     "2023-07-15 14:30:45",
     "%Y-%m-%d %H:%M:%S",
-    Some("2023-07-15T14:30:45+00:00")
+    Some("2023-07-15T14:30:45Z")
   )]
   #[case(
     "2023-07-15T14:30:45",
     "%Y-%m-%dT%H:%M:%S",
-    Some("2023-07-15T14:30:45+00:00")
+    Some("2023-07-15T14:30:45Z")
   )]
   #[case(
     "2023-07-15 14:30:45.123",
     "%Y-%m-%d %H:%M:%S%.3f",
-    Some("2023-07-15T14:30:45.123+00:00")
+    Some("2023-07-15T14:30:45.123Z")
   )]
   #[case(
     "2023-07-15 14:30:45+02:00",
     "%Y-%m-%d %H:%M:%S%:z",
-    Some("2023-07-15T14:30:45+02:00")
+    Some("2023-07-15T12:30:45Z")
   )]
   #[case(
     "2023-07-15 14:30:45 +0200",
     "%Y-%m-%d %H:%M:%S %z",
-    Some("2023-07-15T14:30:45+02:00")
+    Some("2023-07-15T12:30:45Z")
   )]
-  #[case("20230715_143045", "%Y%m%d_%H%M%S", Some("2023-07-15T14:30:45+00:00"))]
-  #[case(
-    "07.15.2023 14:30",
-    "%m.%d.%Y %H:%M",
-    Some("2023-07-15T14:30:00+00:00")
-  )]
-  #[case("2023-07-15", "%Y-%m", None)] // Format mismatch
-  #[case("invalid", "%Y-%m-%d", None)] // Invalid input
-  #[case("2023-13-15", "%Y-%m-%d", None)] // Invalid month
+  #[case("20230715_143045", "%Y%m%d_%H%M%S", Some("2023-07-15T14:30:45Z"))]
+  #[case("07.15.2023 14:30", "%m.%d.%Y %H:%M", Some("2023-07-15T14:30:00Z"))]
+  #[case("2023-07-15", "%Y-%m", None)]
+  #[case("invalid", "%Y-%m-%d", None)]
+  #[case("2023-13-15", "%Y-%m-%d", None)]
   fn test_custom_format_parsing(
     #[case] input: &str,
     #[case] format: &str,
-    #[case] expected_str: Option<&str>,
+    #[case] expected: Option<&str>,
   ) {
     let result = ConversionInput::from_str_with_format(input, Some(format));
-
-    match expected_str {
-      Some(estr) => {
-        let expected = ConversionInput::String(
-          DateTime::parse_from_rfc3339(estr).expect("Test error, invalid expected"),
-        );
-        assert!(
-          result.is_ok(),
-          "Failed to parse '{}' with format '{}': {:?}",
-          input,
-          format,
-          result
-        );
-        let conversion = result.unwrap();
-        assert_eq!(
-          conversion, expected,
-          "Parsed datetime doesn't match expected for input '{}' with format '{}'",
-          input, format
-        );
+    match expected {
+      Some(expected) => {
+        let ConversionInput::String(dt) = result.expect("input should parse") else {
+          panic!("formatted input must be a date-time");
+        };
+        assert_eq!(dt.timestamp(), expected.parse::<Timestamp>().unwrap());
       }
-      None => {
-        assert!(
-          result.is_err(),
-          "Expected parsing to fail for input '{}' with format '{}', but got: {:?}",
-          input,
-          format,
-          result
-        );
-      }
+      None => assert!(result.is_err(), "input should not parse"),
     }
   }
 
   #[rstest]
-  #[case("2023-07-15 14:30:45", "%Y-%m-%d %H:%M:%S")] // Naive -> UTC
-  #[case("2023-07-15 14:30:45+02:00", "%Y-%m-%d %H:%M:%S%:z")] // With offset
+  #[case("2023-07-15 14:30:45", "%Y-%m-%d %H:%M:%S")]
+  #[case("2023-07-15 14:30:45+02:00", "%Y-%m-%d %H:%M:%S%:z")]
   fn test_timezone_handling(#[case] input: &str, #[case] format: &str) {
-    let result = ConversionInput::from_str_with_format(input, Some(format));
-    assert!(result.is_ok(), "Failed to parse: {}", input);
-
-    if let Ok(ConversionInput::String(dt)) = result {
-      // Should have valid timezone information
-      let offset_secs = dt.offset().local_minus_utc().abs();
-      assert!(
-        offset_secs <= 24 * 3600,
-        "Invalid offset: {} seconds",
-        offset_secs
-      );
-    }
+    let ConversionInput::String(dt) =
+      ConversionInput::from_str_with_format(input, Some(format)).expect("input should parse")
+    else {
+      panic!("formatted input must be a date-time");
+    };
+    assert!(dt.offset().seconds().abs() <= 24 * 3600);
   }
 
   #[test]
   fn test_cli_with_input_format_basic() {
     let (output, error) = run_test(" convert -i %Y-%m-%d 2023-07-15 2023-07-16");
     assert_eq!("", error);
-    // Should output timestamps for the parsed dates
-    assert!(output.contains("1689379200000")); // 2023-07-15 as millis
-    assert!(output.contains("1689465600000")); // 2023-07-16 as millis
+    assert!(output.contains("1689379200000"));
+    assert!(output.contains("1689465600000"));
   }
 
   #[test]
   fn test_cli_with_input_format_time() {
-    // Test datetime format without quotes to avoid shell parsing issues in test
     let (output, error) = run_test(" convert -i %Y-%m-%dT%H:%M:%S 2023-07-15T14:30:45");
     assert_eq!("", error);
-    assert!(output.contains("1689431445000")); // Expected timestamp
+    assert!(output.contains("1689431445000"));
   }
 
   #[test]
   fn test_cli_mixed_input_with_format() {
     let (output, error) = run_test(" convert -i %Y-%m-%d 1679258022 2023-07-15");
     assert_eq!("", error);
-    // Should handle both timestamp and formatted date
     assert!(output.contains("1679258022"));
     assert!(output.contains("1689379200000"));
   }
@@ -414,10 +323,10 @@ mod test {
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1679258022
-        1676258187
-        1679258186
-      "},
+      1679258022
+      1676258187
+      1679258186
+    "},
       output
     );
   }
@@ -428,10 +337,10 @@ mod test {
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1676258187
-        1679258022
-        1679258186
-      "},
+      1676258187
+      1679258022
+      1679258186
+    "},
       output
     );
   }
@@ -442,10 +351,10 @@ mod test {
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1679258186
-        1679258022
-        1676258187
-       "},
+      1679258186
+      1679258022
+      1676258187
+    "},
       output
     );
   }
@@ -456,10 +365,10 @@ mod test {
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1679661279000
-        1679661179000
-        1679661079000
-      "},
+      1679661279000
+      1679661179000
+      1679661079000
+    "},
       output
     );
   }
@@ -471,10 +380,10 @@ mod test {
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1679258022
-        1679258186
-        1679258186
-      "},
+      1679258022
+      1679258186
+      1679258186
+    "},
       output
     );
   }
@@ -487,10 +396,10 @@ mod test {
     assert_eq!("", error);
     assert_eq!(
       indoc! {"
-        1679258186000
-        1679258022000
-        1676258186000
-      "},
+      1679258186000
+      1679258022000
+      1676258186000
+    "},
       output
     );
   }
@@ -503,8 +412,6 @@ mod test {
     assert!(output.contains("Output"));
     assert!(output.contains("1679258022"));
     assert!(output.contains("1676258186"));
-    assert!(output.contains("1679258186"));
-    // Verify table borders
     assert!(output.contains("┌─"));
     assert!(output.contains("└─"));
   }
@@ -523,22 +430,14 @@ mod test {
 
   #[test]
   fn table_format_with_sorting() {
-    let (output, error) = run_test(" convert --table -f -p secs -o dsc 1679258022 1676258186 1679258186");
+    let (output, error) =
+      run_test(" convert --table -f -p secs -o dsc 1679258022 1676258186 1679258186");
     assert_eq!("", error);
-    // Verify table contains all inputs
-    assert!(output.contains("1679258022"));
-    assert!(output.contains("1676258186"));
-    assert!(output.contains("1679258186"));
-    // Verify sorting is applied (outputs should be in descending order)
-    let lines: Vec<&str> = output.lines().collect();
-    // Find the data rows (skip header and separator)
-    let data_rows: Vec<&str> = lines
-      .iter()
-      .filter(|l| l.contains("2023-"))
-      .copied()
+    let data_rows: Vec<&str> = output
+      .lines()
+      .filter(|line| line.contains("2023-"))
       .collect();
     assert_eq!(3, data_rows.len());
-    // First data row should contain the latest timestamp
     assert!(data_rows[0].contains("2023-03-19T20:36:26"));
   }
 

@@ -1,5 +1,5 @@
-use chrono::{DateTime, Datelike, Duration, DurationRound, FixedOffset};
 use clap::Args;
+use jiff::{civil::Time, RoundMode, Unit, Zoned, ZonedRound};
 
 use super::Precision;
 
@@ -15,32 +15,42 @@ pub struct TruncateArgs {
 }
 
 impl TruncateArgs {
-  pub fn apply(&self, dt: DateTime<FixedOffset>) -> Result<DateTime<FixedOffset>, String> {
-    let Some(field) = self.truncate.as_ref() else {
+  pub fn apply(&self, dt: Zoned) -> Result<Zoned, String> {
+    let Some(field) = self.truncate else {
       return Ok(dt);
     };
-
-    let trunc_dur = match field {
-      Precision::Weeks | Precision::Days | Precision::Hours => Duration::days(1),
-      Precision::Mins => Duration::hours(1),
-      Precision::Secs => Duration::minutes(1),
-      Precision::Millis => Duration::seconds(1),
-      Precision::Nanos => Duration::milliseconds(1),
+    let truncated = match field {
+      Precision::Weeks => dt.with().month(1).day(1).time(Time::MIN).build(),
+      Precision::Days => dt.with().day(1).time(Time::MIN).build(),
+      Precision::Hours => dt.round(ZonedRound::new().smallest(Unit::Day).mode(RoundMode::Trunc)),
+      Precision::Mins => dt.round(
+        ZonedRound::new()
+          .smallest(Unit::Hour)
+          .mode(RoundMode::Trunc),
+      ),
+      Precision::Secs => dt.round(
+        ZonedRound::new()
+          .smallest(Unit::Minute)
+          .mode(RoundMode::Trunc),
+      ),
+      Precision::Millis => dt.round(
+        ZonedRound::new()
+          .smallest(Unit::Second)
+          .mode(RoundMode::Trunc),
+      ),
+      Precision::Nanos => dt.round(
+        ZonedRound::new()
+          .smallest(Unit::Millisecond)
+          .mode(RoundMode::Trunc),
+      ),
     };
-    let trunc = dt
-      .duration_trunc(trunc_dur)
-      .map_err(|e| format!("Could not truncate: {}", e))?;
-    let trunc = match field {
-      Precision::Weeks => trunc.with_month(1).and_then(|v| v.with_day(1)),
-      Precision::Days => trunc.with_day(1),
-      _ => Some(trunc),
-    };
-    trunc.ok_or_else(|| "Failed to truncate weeks/days".into())
+    truncated.map_err(|e| format!("Could not truncate: {}", e))
   }
 }
 
 #[cfg(test)]
 mod test {
+  use jiff::{tz::TimeZone, Timestamp};
   use rstest::*;
 
   use crate::common::{Precision, TruncateArgs};
@@ -53,13 +63,14 @@ mod test {
   #[case(1681330711220000120, Precision::Hours, 1681257600000000000)]
   #[case(1681330711220000120, Precision::Days, 1680307200000000000)]
   #[case(1681330711220000120, Precision::Weeks, 1672531200000000000)]
-  fn apply(#[case] in_nanos: i64, #[case] pre: Precision, #[case] exp_nanos: i64) {
+  fn apply(#[case] in_nanos: i64, #[case] pre: Precision, #[case] exp_nanos: i128) {
     let args = TruncateArgs {
       truncate: Some(pre),
     };
-    let nanos = Precision::Nanos;
-    let truncated_0 = args.apply(nanos.parse(in_nanos).unwrap().into());
-    let truncated = truncated_0.map(|p| p.timestamp_nanos());
+    let dt = Timestamp::from_nanosecond(in_nanos.into())
+      .unwrap()
+      .to_zoned(TimeZone::UTC);
+    let truncated = args.apply(dt).map(|p| p.timestamp().as_nanosecond());
     assert_eq!(truncated, Ok(exp_nanos))
   }
 }
